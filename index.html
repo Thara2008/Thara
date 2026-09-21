@@ -428,6 +428,9 @@ async function refreshFromServer(){
   }
   serverReady = true;
   if (sig === lastSignature && serverConnected) return; // nothing changed — keep the DOM (and any half-typed input) intact
+const active = document.activeElement;
+const typing = active && (active.id === 'loginUser' || active.id === 'loginPass' || active.id === 'pinInput');
+if (typing) return; // don't wipe the form while the user is actively typing
   lastSignature = sig || '';
   render();
 }
