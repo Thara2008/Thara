@@ -1,11 +1,11 @@
 {
   "name": "fc-mobile-league-manager",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "private": true,
-  "description": "World Cup-style FC Mobile league tournament manager - single-file app, zero dependencies.",
+  "description": "World Cup-style FC Mobile league tournament manager - single-file app + zero-dependency multi-user server with per-admin accounts and live sync.",
   "scripts": {
     "dev": "node server.js",
     "start": "node server.js",
-    "test": "node test.js && node render-smoke.js"
+    "test": "node test.js && node render-smoke.js && node api-test.js && node sync-test.js"
   }
 }

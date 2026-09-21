@@ -235,6 +235,16 @@
     padding:10px 14px; border-radius:10px; font-size:13.5px; margin-bottom:16px;
   }
   .footer-note{ margin-top:40px; color:#5b7190; font-size:12px; text-align:center; line-height:1.6; }
+  .panel{ background:rgba(255,255,255,.03); border:1px solid var(--line); border-radius:14px; padding:16px; margin-top:18px; }
+  .panel h3{ margin:0 0 6px; font-size:16px; }
+  .admin-panel{ border-color:rgba(251,191,36,.35); }
+  .push-banner{ display:flex; align-items:center; flex-wrap:wrap; gap:6px; }
+  .act-list{ display:flex; flex-direction:column; }
+  .act-row{ display:flex; align-items:center; gap:8px; padding:7px 2px; border-bottom:1px dashed rgba(255,255,255,.07); font-size:13px; flex-wrap:wrap; }
+  .act-row:last-child{ border-bottom:0; }
+  .act-user{ color:#ffd36b; font-weight:700; }
+  .act-msg{ color:#dfe8f3; }
+  .act-time{ color:var(--dim); font-size:11px; margin-left:auto; white-space:nowrap; }
 
   /* ---- winner + champion animations ---- */
   @keyframes pop-in{ from{ opacity:0; transform:scale(.88); } to{ opacity:1; transform:scale(1); } }
@@ -334,11 +344,25 @@
 const PIN = 'qwert';
 const LS_KEY = 'fcm_league_manager_v1';
 const VALID_N = [2, 4, 8, 16, 32];  // legal total qualifiers (power of two)
+// Server mode = running over http(s) with the multi-user backend (shared website, per-admin accounts).
+// Offline mode = file:// single-user, admin PIN instead of accounts. Tests run offline.
+const IS_SERVER = typeof location !== 'undefined' && /^https?:$/.test(location.protocol) && typeof fetch === 'function' && typeof EventSource !== 'undefined';
 let migrated = false;               // set true by load() when it migrated legacy data
 let state = load() || { tournaments: [] };
+let localTournamentCount = state.tournaments.length; // browser-cache count, for the "push local data" option
 let migratedNow = migrated;
-let unlocked = sessionStorage.getItem('fcm_admin_unlocked') === '1';
+let unlocked = IS_SERVER
+  ? (sessionStorage.getItem('fcm_token') !== null)
+  : sessionStorage.getItem('fcm_admin_unlocked') === '1';
 let pinOpen = false;
+let loginOpen = false;              // server mode: login form open
+let adminPanelOpen = false;         // server mode: "add admin" form open
+let serverMe = null;                // { name } of the logged-in admin (server mode)
+let serverConnected = false;        // last server sync succeeded
+let serverReady = false;            // first server sync finished
+let serverStreams = null;           // true = live push (SSE), false = poll (serverless hosts like Vercel)
+let activity = [];                  // change feed (who changed what) from the server
+let lastSignature = '';             // signature of the last synced state — skip re-renders when nothing changed
 let view = { type: 'dashboard', groupId: null, matchGroupId: null, pickOverrides: {}, qgValues: {}, wildcards: 0 };
 let tab = 'table';
 let editingMatchId = null;
@@ -346,8 +370,80 @@ let flash = '';
 
 function uid(p){ return p + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function save(){ localStorage.setItem(LS_KEY, JSON.stringify(state)); }
+function save(message){
+  try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch (e){ /* storage full / private mode */ }
+  const msg = String(message || '');
+  if (!IS_SERVER || !serverReady || !unlocked || !msg) return; // offline cache only, or nothing meaningful changed
+  const tok = sessionStorage.getItem('fcm_token');
+  if (!tok) return;
+  fetch('/api/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + tok },
+    body: JSON.stringify({ state: state, message: msg })
+  }).then(r => {
+    if (r.status === 401){
+      sessionStorage.removeItem('fcm_token');
+      sessionStorage.removeItem('fcm_name');
+      unlocked = false; serverMe = null;
+      flash = 'Session expired — please log in again.';
+      render();
+    }
+  }).catch(() => {
+    flash = '⚠️ Could not reach the server — saved on this device only.';
+    render();
+  });
+}
 function todayStr(){ return new Date().toLocaleDateString(undefined, { year:'numeric', month:'short', day:'numeric' }); }
+
+/* ---- server sync (multi-user website mode) ---- */
+function timeAgo(ts){
+  const d = Date.now() - ts;
+  if (d < 60e3) return 'just now';
+  if (d < 3600e3) return Math.floor(d / 60e3) + 'm ago';
+  if (d < 86400e3) return Math.floor(d / 3600e3) + 'h ago';
+  return Math.floor(d / 86400e3) + 'd ago';
+}
+async function refreshFromServer(){
+  let sig = null;
+  try {
+    const headers = {};
+    const tok = sessionStorage.getItem('fcm_token');
+    if (tok) headers['Authorization'] = 'Bearer ' + tok;
+    const res = await fetch('/api/state', { headers });
+    if (!res.ok) throw new Error('bad status');
+    const d = await res.json();
+    sig = JSON.stringify([d.state, d.activity, d.me ? [d.me.name, d.me.username] : null]);
+    if (sig !== lastSignature){
+      state = d.state;
+      activity = Array.isArray(d.activity) ? d.activity : [];
+      if (d.me){ serverMe = d.me; unlocked = true; }
+      else if (tok){ sessionStorage.removeItem('fcm_token'); sessionStorage.removeItem('fcm_name'); serverMe = null; unlocked = false; }
+      else { serverMe = null; }
+      serverStreams = d.streams === false ? false : true;
+    }
+    serverConnected = true;
+  } catch (e){
+    serverConnected = false;
+    if (!serverReady) flash = '⚠️ Offline — showing the last saved copy. Changes will sync when the server is back.';
+  }
+  serverReady = true;
+  if (sig === lastSignature && serverConnected) return; // nothing changed — keep the DOM (and any half-typed input) intact
+  lastSignature = sig || '';
+  render();
+}
+async function initServer(){
+  await refreshFromServer();
+  if (serverStreams === false){
+    // serverless host (e.g. Vercel): no SSE — poll instead, so everyone still sees admin changes
+    if (typeof setInterval === 'function') setInterval(refreshFromServer, 4000);
+  } else if (serverStreams === true && typeof EventSource !== 'undefined'){
+    const es = new EventSource('/api/events');
+    es.onmessage = ev => { if ((ev.data || '').trim() === 'update') refreshFromServer(); };
+  } else {
+    // first sync failed (server down) — keep retrying so we come back online automatically
+    if (typeof setInterval === 'function') setInterval(refreshFromServer, 5000);
+  }
+}
 
 /* legacy data (single table + fixed QF/SF/Final) => groups + dynamic rounds */
 function migrate(data){
@@ -524,15 +620,7 @@ function headerHTML(){
       <div><h1>FC Mobile League Manager</h1><p>World-Cup Style Groups · Tables · Knockouts · ${n} tournament(s)</p></div>
     </div>
     <div class="top-actions">
-      ${unlocked
-        ? `<span class="admin-badge">🛡️ Admin Mode</span><button class="btn ghost" data-action="lock">Lock &#128274;</button>`
-        : (pinOpen
-            ? `<form class="pin-form" data-form="pin">
-                 <input id="pinInput" type="password" maxlength="20" placeholder="Enter admin PIN" autocomplete="off">
-                 <button class="btn primary" data-action="set-pin" data-inline="1">Unlock</button>
-                 <button type="button" class="btn ghost" data-action="toggle-pin" data-inline="1">Cancel</button>
-               </form>`
-            : `<button class="btn admin-btn" data-action="toggle-pin">🔐 Admin Login</button>`)}
+      ${IS_SERVER ? accountAreaHTML() : pinAreaHTML()}
     </div>
   </header>`;
 }
@@ -540,19 +628,37 @@ function headerHTML(){
 /* ================= DASHBOARD ================= */
 function dashboardHTML(){
   const t = state.tournaments;
+  const canPush = IS_SERVER && serverReady && unlocked && state.tournaments.length === 0 && localTournamentCount > 0;
   return `<main class="wrap">
     <div class="page-head">
       <h2>🏟️ Your Tournaments</h2>
-      <p class="hint">${unlocked ? 'Admin mode is ON — you can create and edit tournaments.' : 'Read-only mode. Enter the admin PIN to make changes.'}</p>
+      <p class="hint">${unlocked
+        ? 'Admin mode is ON — you can create and edit tournaments.'
+        : (IS_SERVER ? 'Read-only mode. Log in with an admin account to make changes.' : 'Read-only mode. Enter the admin PIN to make changes.')}</p>
     </div>
+    ${IS_SERVER && !serverConnected ? `<div class="flash">⚠️ Offline — showing the last saved copy. Changes will sync when the server is back.</div>` : ''}
     ${flash ? `<div class="flash">${flash}</div>` : ''}
+    ${canPush ? `<div class="flash push-banner">📦 This browser has <b>${localTournamentCount}</b> local tournament(s) not on the shared website yet.
+        <button class="btn primary" data-action="push-local" style="margin-left:8px">Push them up</button></div>` : ''}
     <div class="toolbar">
       ${unlocked ? `
         <button class="btn" data-action="export">⬇️ Export Backup</button>
         <button class="btn" data-action="import">⬆️ Import Backup</button>
-        <button class="btn danger" data-action="reset-all">🗑️ Reset All Data</button>` : ''}
+        <button class="btn danger" data-action="reset-all">🗑️ Reset All Data</button>
+        ${IS_SERVER ? `<button class="btn" data-action="add-admin-open">➕ ${adminPanelOpen ? 'Close' : 'Add'} Admin</button>` : ''}` : ''}
       <input type="file" id="importFile" accept=".json,application/json" style="display:none">
     </div>
+    ${unlocked && IS_SERVER && adminPanelOpen ? `
+      <div class="panel admin-panel">
+        <h3>➕ Add an admin account</h3>
+        <p class="hint">Every admin can edit the shared website from anywhere. Give each new admin their own username + password — they sign in with the button in the header.</p>
+        <div class="pair-grid" style="margin-top:10px">
+          <div class="pair-box"><div class="plabel">Username</div><input id="auUser" type="text" maxlength="40" autocomplete="off"></div>
+          <div class="pair-box"><div class="plabel">Password</div><input id="auPass" type="password" maxlength="60" autocomplete="new-password"></div>
+          <div class="pair-box"><div class="plabel">Display name (optional)</div><input id="auDisplay" type="text" maxlength="40" autocomplete="off"></div>
+        </div>
+        <button class="btn primary" data-action="add-user" style="margin-top:10px">Create admin</button>
+      </div>` : ''}
     ${t.length === 0 ? `<div class="empty-box">No tournaments yet. ${unlocked ? 'Create your first tournament below!' : 'Login as admin to create one.'}</div>` : ''}
     <div class="cards">
       ${t.map(cardHTML).join('')}
@@ -566,9 +672,11 @@ function dashboardHTML(){
         </form>
       </div>` : ''}
     </div>
+    ${activity.length ? activityHTML() : ''}
     <div class="footer-note">
-      Data is stored locally in this browser (localStorage).<br>
-      Use <b>Export Backup</b> (admin) to save / share a copy — <b>Import Backup</b> loads it back.
+      ${IS_SERVER
+        ? 'This is the shared website — every save by an admin appears live for everyone, and the 🕓 Recent changes feed shows who changed what.<br>You can export/import backups as extras too.'
+        : 'Data is stored locally in this browser (localStorage).<br>Use <b>Export Backup</b> (admin) to save / share a copy — <b>Import Backup</b> loads it back.'}
     </div>
   </main>`;
 }
@@ -1088,9 +1196,60 @@ function openTournamentState(t){
            matchFilter: null, pickOverrides: {}, qgValues: {}, wildcards: 0 };
   tab = 'table'; editingMatchId = null; pinOpen = false;
 }
+/* ---- activity feed + account UI (server mode) ---- */
+const ACT_MSG = { // fallback phrases for actions that always mutate (cases override with logMsg for named detail)
+  'create-tournament': 'Created a tournament',
+  'add-group': 'Added a group',
+  'add-team': 'Added a team',
+  'add-match': 'Recorded a match result',
+  'save-match': 'Updated a match result',
+  'save-ko-match': 'Recorded a knockout result',
+  'move-team': 'Moved a team between groups',
+  'create-bracket': 'Created the knockout bracket'
+};
+function pinAreaHTML(){
+  return unlocked
+    ? `<span class="admin-badge">🛡️ Admin Mode</span><button class="btn ghost" data-action="lock">Lock &#128274;</button>`
+    : (pinOpen
+        ? `<form class="pin-form" data-form="pin">
+             <input id="pinInput" type="password" maxlength="20" placeholder="Enter admin PIN" autocomplete="off">
+             <button class="btn primary" data-action="set-pin" data-inline="1">Unlock</button>
+             <button type="button" class="btn ghost" data-action="toggle-pin" data-inline="1">Cancel</button>
+           </form>`
+        : `<button class="btn admin-btn" data-action="toggle-pin">🔐 Admin Login</button>`);
+}
+function accountAreaHTML(){
+  if (unlocked){
+    return `<span class="admin-badge">🛡️ ${esc(serverMe ? serverMe.name : 'Admin')}</span>
+            <button class="btn ghost" data-action="logout">Logout</button>`;
+  }
+  if (loginOpen){
+    return `<form class="pin-form" data-form="login">
+              <input id="loginUser" type="text" maxlength="40" placeholder="Username" autocomplete="username">
+              <input id="loginPass" type="password" maxlength="60" placeholder="Password" autocomplete="current-password">
+              <button class="btn primary" data-action="login" data-inline="1">Login</button>
+              <button type="button" class="btn ghost" data-action="toggle-login" data-inline="1">Cancel</button>
+            </form>`;
+  }
+  return `<button class="btn admin-btn" data-action="toggle-login">🔐 Admin Login</button>`;
+}
+function activityHTML(){
+  const rows = activity.slice(0, 25).map(a => `
+    <div class="act-row">
+      <span class="act-user">${esc(a.user || 'Admin')}</span>
+      <span class="act-msg">${esc(a.message || 'updated the league')}</span>
+      <span class="act-time">${timeAgo(a.ts)}</span>
+    </div>`).join('');
+  return `<div class="panel act-panel">
+    <h3>🕓 Recent changes</h3>
+    <p class="hint">Live feed — every save made by any admin, for everyone to see.</p>
+    <div class="act-list">${rows}</div>
+  </div>`;
+}
 function handle(action, elId, el){
   const t = view.type === 'tournament' ? findTournament(view.id) : null;
   flash = '';
+  let logMsg = '';
   switch(action){
     case 'go-home': view = { type:'dashboard' }; tab = 'table'; editingMatchId = null; break;
     case 'toggle-pin': pinOpen = !pinOpen; break;
@@ -1106,10 +1265,86 @@ function handle(action, elId, el){
       break;
     }
     case 'lock':
-      unlocked = false; pinOpen = false;
+      unlocked = false; pinOpen = false; loginOpen = false;
       sessionStorage.removeItem('fcm_admin_unlocked');
+      if (IS_SERVER){ sessionStorage.removeItem('fcm_token'); sessionStorage.removeItem('fcm_name'); serverMe = null; }
       editingMatchId = null;
       break;
+    case 'toggle-login': loginOpen = !loginOpen; break;
+    case 'login': {
+      const un = document.getElementById('loginUser');
+      const pw = document.getElementById('loginPass');
+      const username = un ? un.value.trim() : '';
+      const password = pw ? pw.value : '';
+      if (!username || !password){ alert('Enter your username and password.'); break; }
+      fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: username, password: password })
+      }).then(r => r.json()).then(d => {
+        if (d && d.token){
+          sessionStorage.setItem('fcm_token', d.token);
+          sessionStorage.setItem('fcm_name', d.name || username);
+          unlocked = true; serverMe = { name: d.name || username };
+          loginOpen = false;
+          flash = '✅ Logged in as ' + (d.name || username) + ' — you can edit.';
+        } else {
+          alert((d && d.error) || 'Login failed.');
+        }
+        render();
+      }).catch(() => alert('Could not reach the server.'));
+      break;
+    }
+    case 'logout':
+      sessionStorage.removeItem('fcm_token');
+      sessionStorage.removeItem('fcm_name');
+      unlocked = false; serverMe = null; loginOpen = false; adminPanelOpen = false;
+      flash = '🔒 Logged out — back to read-only.';
+      break;
+    case 'add-admin-open': adminPanelOpen = !adminPanelOpen; break;
+    case 'add-user': {
+      const uu = document.getElementById('auUser');
+      const pp = document.getElementById('auPass');
+      const dd = document.getElementById('auDisplay');
+      const username = uu ? uu.value.trim() : '';
+      const password = pp ? pp.value : '';
+      const display = dd ? dd.value.trim() : '';
+      if (username.length < 3 || password.length < 4){ alert('Username: 3+ characters. Password: 4+ characters.'); break; }
+      const tok = sessionStorage.getItem('fcm_token');
+      if (!tok) break;
+      fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + tok },
+        body: JSON.stringify({ username: username, password: password, display: display })
+      }).then(r => r.json()).then(d => {
+        if (d && d.ok){
+          if (uu) uu.value = ''; if (pp) pp.value = ''; if (dd) dd.value = '';
+          flash = '✅ Admin account "' + username + '" created.';
+        } else {
+          alert((d && d.error) || 'Failed to add admin.');
+        }
+        render();
+      }).catch(() => alert('Could not reach the server.'));
+      break;
+    }
+    case 'push-local': {
+      const cached = load();
+      const n = cached && cached.tournaments ? cached.tournaments.length : 0;
+      if (n === 0){ alert('Nothing local to push.'); break; }
+      if (!confirm('Push the ' + n + ' tournament(s) from this browser to the shared website? This replaces the shared data with this copy.')) break;
+      const tok = sessionStorage.getItem('fcm_token');
+      if (!tok) break;
+      fetch('/api/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + tok },
+        body: JSON.stringify({ state: cached, message: 'Imported local browser data (' + n + ' tournament' + (n === 1 ? '' : 's') + ')' })
+      }).then(r => r.json()).then(d => {
+        if (d && d.ok){ flash = '✅ Your local data is now on the shared website.'; }
+        else { alert((d && d.error) || 'Failed to push.'); }
+        refreshFromServer();
+      }).catch(() => alert('Could not reach the server.'));
+      break;
+    }
     case 'create-tournament': {
       const v = document.getElementById('newTournamentName');
       const name = v ? v.value.trim() : '';
@@ -1119,7 +1354,8 @@ function handle(action, elId, el){
         groups: [{ id: uid('g'), name: 'Group A', teams: [] }],
         matches: [], knockouts: null
       });
-      save(); flash = '🏟️ Tournament created! Add teams to Group A, then add more groups.';
+      flash = '🏟️ Tournament created! Add teams to Group A, then add more groups.';
+      logMsg = 'Created tournament "' + name.trim() + '"';
       break;
     }
     case 'open-tournament': {
@@ -1130,20 +1366,21 @@ function handle(action, elId, el){
     case 'rename-tournament': {
       const tt = findTournament(elId); if (!tt) break;
       const name = prompt('New tournament name:', tt.name);
-      if (name && name.trim()){ tt.name = name.trim(); save(); }
+      const nn = name && name.trim();
+      if (nn){ tt.name = nn; logMsg = 'Renamed tournament to "' + nn + '"'; }
       break;
     }
     case 'delete-tournament': {
       const tt = findTournament(elId); if (!tt) break;
       if (confirm(`Delete "${tt.name}" and ALL its groups, teams, results and knockouts? This cannot be undone.`)){
         state.tournaments = state.tournaments.filter(x => x.id !== elId);
-        save();
+        logMsg = 'Deleted tournament "' + tt.name + '"';
       }
       break;
     }
     case 'save-tournament-name': {
       const v = document.getElementById('tournNameInput');
-      if (t && v && v.value.trim()){ t.name = v.value.trim(); save(); flash = '✅ Tournament renamed.'; }
+      if (t && v && v.value.trim()){ t.name = v.value.trim(); flash = '✅ Tournament renamed.'; logMsg = 'Renamed tournament to "' + t.name + '"'; }
       break;
     }
     case 'tab': tab = el.dataset.val; editingMatchId = null;
@@ -1156,13 +1393,14 @@ function handle(action, elId, el){
       if (!t) break;
       const g = { id: uid('g'), name: 'Group ' + nextGroupLetter(t), teams: [] };
       t.groups.push(g); view.groupId = g.id;
-      save(); flash = '◧ ' + g.name + ' added.';
+      flash = '◧ ' + g.name + ' added.';
+      logMsg = 'Added ' + g.name;
       break;
     }
     case 'rename-group': {
       const g = findGroup(t, elId);
       const v = document.getElementById('gname-' + elId);
-      if (g && v && v.value.trim()){ g.name = v.value.trim(); save(); flash = '✅ Group renamed.'; }
+      if (g && v && v.value.trim()){ g.name = v.value.trim(); flash = '✅ Group renamed.'; logMsg = 'Renamed group to "' + g.name + '"'; }
       break;
     }
     case 'delete-group': {
@@ -1182,7 +1420,8 @@ function handle(action, elId, el){
           if (!groupsOf(t).length || allTeams(t).length === 0){ t.knockouts = null; }
         }
         if (view.groupId === g.id) view.groupId = groupsOf(t).length ? groupsOf(t)[0].id : null;
-        save(); flash = '🗑️ ' + g.name + ' deleted.';
+        flash = '🗑️ ' + g.name + ' deleted.';
+        logMsg = 'Deleted ' + g.name;
       }
       break;
     }
@@ -1193,7 +1432,8 @@ function handle(action, elId, el){
       const name = nv ? nv.value.trim() : '';
       if (!name){ alert('Enter a team / player name.'); break; }
       g.teams.push({ id: uid('tm'), name, note: av ? av.value.trim() : '' });
-      save(); flash = '👥 Team added to ' + g.name + '.';
+      flash = '👥 Team added to ' + g.name + '.';
+      logMsg = 'Added team "' + name + '" to ' + g.name;
       break;
     }
     case 'delete-team': {
@@ -1209,7 +1449,8 @@ function handle(action, elId, el){
           }));
           autoAdvance(t);
         }
-        save(); flash = '🗑️ Team removed.';
+        flash = '🗑️ Team removed.';
+        logMsg = 'Removed team "' + team.name + '"';
       }
       break;
     }
@@ -1223,7 +1464,8 @@ function handle(action, elId, el){
       src.teams = src.teams.filter(x => x.id !== elId);
       dst.teams.push(team);
       t.matches.forEach(m => { if (m.homeId === elId || m.awayId === elId) m.groupId = dst.id; });
-      save(); flash = '↔️ ' + team.name + ' moved to ' + dst.name + '.';
+      flash = '↔️ ' + team.name + ' moved to ' + dst.name + '.';
+      logMsg = 'Moved "' + team.name + '" to ' + dst.name;
       break;
     }
     case 'filter-matches': view.matchFilter = elId || null; break;
@@ -1238,7 +1480,8 @@ function handle(action, elId, el){
       if (isNaN(hs) || isNaN(as) || hs < 0 || as < 0){ alert('Enter valid goal numbers.'); break; }
       if (hasDuplicateMatch(t, home, away, null)){ alert('That exact fixture already exists. Use Edit to change its score.'); break; }
       t.matches.push({ id: uid('m'), groupId: g.id, homeId: home, awayId: away, homeGoals: hs, awayGoals: as });
-      save(); flash = '⚽ Result recorded — ' + g.name + ' table updated.';
+      flash = '⚽ Result recorded — ' + g.name + ' table updated.';
+      logMsg = 'Recorded result: ' + teamName(t, home) + ' ' + hs + '-' + as + ' ' + teamName(t, away);
       break;
     }
     case 'edit-match': editingMatchId = elId; break;
@@ -1255,13 +1498,16 @@ function handle(action, elId, el){
       if (hasDuplicateMatch(t, home, away, m.id)){ alert('That exact fixture already exists elsewhere.'); break; }
       const ng = groupOfTeam(t, home); if (ng) m.groupId = ng.id;
       m.homeId = home; m.awayId = away; m.homeGoals = hs; m.awayGoals = as;
-      editingMatchId = null; save(); flash = '✅ Match updated.';
+      editingMatchId = null; flash = '✅ Match updated.';
+      logMsg = 'Updated result: ' + teamName(t, home) + ' ' + hs + '-' + as + ' ' + teamName(t, away);
       break;
     }
     case 'delete-match': {
       if (confirm('Delete this match result?')){
+        const dm = t.matches.find(x => x.id === elId);
         t.matches = t.matches.filter(x => x.id !== elId);
-        editingMatchId = null; save(); flash = '🗑️ Match deleted.';
+        editingMatchId = null; flash = '🗑️ Match deleted.';
+        logMsg = dm ? 'Deleted result: ' + teamName(t, dm.homeId) + ' vs ' + teamName(t, dm.awayId) : 'Deleted a match result';
       }
       break;
     }
@@ -1287,7 +1533,8 @@ function handle(action, elId, el){
       t.knockouts = { config: { counts, wildcards }, rounds };
       autoAdvance(t);
       view.pickOverrides = {};
-      save(); flash = '📋 Knockout bracket created (' + total + ' teams) — record the results!';
+      flash = '📋 Knockout bracket created (' + total + ' teams) — record the results!';
+      logMsg = 'Created the knockout bracket (' + total + ' teams)';
       break;
     }
     case 'save-ko-match': {
@@ -1305,14 +1552,16 @@ function handle(action, elId, el){
       m.awayScore = asRaw === '' ? null : Math.max(0, parseInt(asRaw, 10) || 0);
       m.penWinner = pen || null;
       autoAdvance(t);
-      save(); flash = '🏆 Knockout match saved.';
+      flash = '🏆 Knockout match saved.';
+      logMsg = 'Recorded a knockout result';
       break;
     }
     case 'reset-bracket': {
       if (t && confirm('Reset the whole knockout bracket? All knockout results will be cleared; you can rebuild it from the current standings.')){
         t.knockouts = null;
         view.pickOverrides = {}; view.qgValues = {}; view.wildcards = 0;
-        save(); flash = '↺ Bracket reset — set it up again with the qualify counts.';
+        flash = '↺ Bracket reset — set it up again with the qualify counts.';
+        logMsg = 'Reset the knockout bracket';
       }
       break;
     }
@@ -1335,7 +1584,7 @@ function handle(action, elId, el){
           const data = migrate(JSON.parse(reader.result));
           if (!data || !Array.isArray(data.tournaments)) throw new Error('bad');
           state = data;
-          save();
+          save('Imported a backup file');
           flash = '✅ Backup imported successfully.';
           render();
         } catch(err){ alert('That file is not a valid backup (expected JSON with a "tournaments" array).'); }
@@ -1349,11 +1598,12 @@ function handle(action, elId, el){
         state = { tournaments: [] };
         view = { type:'dashboard' };
         flash = '🗑️ All data erased.';
+        logMsg = 'Erased all data';
       }
       break;
     }
   }
-  save();
+  save(logMsg || ACT_MSG[action] || '');
   render();
 }
 
@@ -1394,6 +1644,7 @@ document.addEventListener('keydown', e => {
 /* ================= INIT ================= */
 if (migratedNow) save();
 render();
+if (IS_SERVER) initServer();
 </script>
 </body>
 </html>
