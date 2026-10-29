@@ -126,7 +126,7 @@ const SUITE_SSE = `
   click('login');
   await sleep(10);
   T('login unlocks and caches the token', unlocked === true && sessionStorage.getItem('fcm_token') === 'tk-sam');
-  T('header shows the admin badge + name', __appEl.innerHTML.indexOf('Logout') !== -1 && __appEl.innerHTML.indexOf('>Sam<') !== -1);
+  T('header shows the admin badge + name', __appEl.innerHTML.indexOf('Log out') !== -1 && __appEl.innerHTML.indexOf('>Sam<') !== -1);
 
   console.log('\\n[server-mode client A] admin save goes to the server');
   setEl('newTournamentName', 'World Cup');

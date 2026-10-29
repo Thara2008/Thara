@@ -51,7 +51,15 @@ const T4 = { id:'t4', name:'Legacy Shape', createdAt: Date.now(),
   knockouts: null };
 
 const seed = JSON.stringify({ tournaments: [T1, T2, T3, T4] });
-const storage = (init) => { let d = init; return { getItem: () => d, setItem: (k, v) => { d = v; }, removeItem: () => { d = null; } }; };
+const storage = (init, seedKey) => {
+  const map = new Map();
+  if (init != null) map.set(seedKey || 'fcm_league_manager_v1', init);
+  return {
+    getItem: k => (map.has(k) ? map.get(k) : null),
+    setItem: (k, v) => { map.set(k, String(v)); },
+    removeItem: k => { map.delete(k); }
+  };
+};
 const appEl = { innerHTML: '' };
 const els = {};
 function buildSandbox(admin){
@@ -80,8 +88,13 @@ function buildSandbox(admin){
       createElement(){ return {}; }
     },
     localStorage: storage(seed),
-    sessionStorage: storage(admin ? '1' : null),
-    alert(){}, confirm:()=>true, prompt(){}, URL:{}, FileReader(){}, Blob(){}
+    sessionStorage: storage(admin ? JSON.stringify({
+      username: 'tharana is the goat',
+      name: 'Tharana is the Goat',
+      role: 'head'
+    }) : null, 'ceylonfc_admin_session_v1'),
+    alert(){}, confirm:()=>true, prompt(){}, URL:{}, FileReader(){}, Blob(){},
+    window: { addEventListener(){} }
   };
 }
 

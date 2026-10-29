@@ -1,6 +1,6 @@
 'use strict';
 /* ============================================================
- * FC Mobile League Manager — long-running server (zero deps)
+ * Ceylon FC — long-running server (zero deps)
  * ------------------------------------------------------------
  * For local dev, Render / Railway / Fly.io / a VPS.
  * Serves the app, the shared API (lib/handler.js), file-backed
@@ -11,8 +11,8 @@
  * Env vars:
  *   PORT            port (default 8123)
  *   DATA_DIR        folder for db.json + users.json (default ./data)
- *   ADMIN_USER      first admin username  (default admin)
- *   ADMIN_PASSWORD  first admin password  (default qwert — change in prod!)
+ *   ADMIN_USER      optional head-admin username override (fresh deployments)
+ *   ADMIN_PASSWORD  optional head-admin password override (never committed)
  *   SECRET          random string for signed admin sessions
  *   OPEN_BROWSER    0 = do not auto-open a browser
  *
@@ -43,8 +43,8 @@ function envInt(k, d){ const v = parseInt(process.env[k], 10); return isNaN(v) ?
 let DATA_DIR, BOOTSTRAP_USER, BOOTSTRAP_PASS;
 function setConfig(){
   DATA_DIR = path.resolve(envStr('DATA_DIR', path.join(ROOT, 'data')));
-  BOOTSTRAP_USER = envStr('ADMIN_USER', 'admin');
-  BOOTSTRAP_PASS = envStr('ADMIN_PASSWORD', 'qwert');
+  BOOTSTRAP_USER = envStr('ADMIN_USER', '');
+  BOOTSTRAP_PASS = envStr('ADMIN_PASSWORD', '');
 }
 setConfig(); // CLI default; startServer() re-reads so tests/hosts can configure via env
 
@@ -71,7 +71,7 @@ function serveStatic(req, res, pathname){
   // never expose private files / the data dir
   const rel = path.relative(ROOT, filePath);
   const base = rel.split(path.sep)[0];
-  if (base === 'data' || base === 'server.js' || base === 'api-test.js' || base === 'test.js' || base === 'render-smoke.js' || base === 'sync-test.js' || base === 'package.json' || base === 'README.md' || rel.startsWith('.')){
+  if (base === 'data' || base === 'server.js' || base === 'api-test.js' || base === 'test.js' || base === 'render-smoke.js' || base === 'feature-smoke.js' || base === 'sync-test.js' || base === 'package.json' || base === 'README.md' || rel.startsWith('.')){
     res.writeHead(404); res.end('Not found'); return;
   }
   try {
@@ -129,7 +129,7 @@ async function startServer(port, opts){
       const real = server.address().port;
       if (openBrowser){
         const url = 'http://localhost:' + real + '/';
-        console.log('⚽ FC Mobile League Manager');
+        console.log('⚽ Ceylon FC — FC Mobile League');
         console.log('   ➜  ' + url);
         console.log('   ➜  Data: ' + DATA_DIR);
         const { exec } = require('child_process');

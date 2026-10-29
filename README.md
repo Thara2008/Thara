@@ -1,9 +1,29 @@
-# ⚽ FC Mobile League Manager
+# ⚽ Ceylon FC — FC Mobile League
 
-A complete tournament manager for FC Mobile leagues: **World Cup–style groups**, automatic
-points tables, **admin-chosen qualify counts + wildcards**, dynamic **knockout brackets**,
-per-team **advice for next tournaments**, and — new in v2 — a **shared multi-user website**
-with **per-admin accounts**, a **live change feed**, and **real-time updates** for every viewer.
+The official **Ceylon FC** league website: a complete tournament manager and club newsroom for
+FC Mobile leagues, built around **World Cup–style groups**, automatic points tables,
+**admin-chosen qualify counts + wildcards**, dynamic **knockout brackets**, and per-team
+**advice for next tournaments** — plus a **shared multi-user website** with **per-admin accounts**,
+a **live change feed**, and **real-time updates** for every viewer.
+
+## 🧭 Website tabs
+
+| Tab | What it shows |
+|-----|---------------|
+| 🏠 **Home** | Hero + season, announcement banner, next fixtures, latest news, honours, open poll, Player of the Month and recent changes |
+| 🏆 **League** | The full tournament manager — groups, tables, rankings, matches and knockouts |
+| 📅 **Fixtures** | Every upcoming tie and recorded result, kickoff times in the visitor's local time zone, `.ics` calendar downloads and match reports |
+| 📰 **News** | Club stories, match reports, announcements, transfers and interviews with categories, cover images and share links |
+| 🎮 **Fan Zone** | Predictions, one-vote MOTM, fantasy Team of the Week and public polls |
+| 👟 **Players** | Player profiles with XP, levels, automatic/manual badges and season stats |
+| ⚡ **Power** | Admin-written power rankings with rise/fall arrows |
+| 🏅 **Honours** | Animated club honours, every Ceylon FC champion and the full champion history |
+| 📖 **About** | Club story, mission, league format, staff, contact/social links and sponsors (admins can edit everything, including the club crest) |
+
+Tabs switch instantly without a reload and remember the last one you visited. Every feature has a
+shareable hash route: `#home`, `#league`, `#fixtures`, `#news`, `#fans`, `#players`, `#power`,
+`#hall`, `#about`, plus `#news/<id>`, `#match/<matchKey>` and `#player/<id>` detail pages.
+Fan Zone subroutes are `#predict`, `#motm`, `#fantasy` and `#polls`.
 
 ---
 
@@ -12,9 +32,13 @@ with **per-admin accounts**, a **live change feed**, and **real-time updates** f
 ### 🖥️ 1. Local / single-file (offline)
 
 - Just open `index.html` in any browser (double-click it).
-- No server needed. Data is saved in that browser (localStorage).
-- Admin access: **PIN `qwert`** (top-right → 🔐 Admin Login).
+- No server needed. League data and local admin accounts are saved in that browser
+  (localStorage).
+- Admin access uses a **username + password** (top-right → 🔐 Admin Login), not a shared PIN.
 - Good for one organiser on one machine.
+- ⚠️ Browser-only account checks are **convenience protection, not real security**. Anyone with
+  access to the device/browser can bypass them. Use the hosted mode below when other people can
+  reach the website.
 
 ### 🌐 2. Shared website (multi-user)
 
@@ -23,17 +47,48 @@ with **per-admin accounts**, a **live change feed**, and **real-time updates** f
 - All admins edit the **same** data; every change is saved on the server and
   **shown live to everyone** (via Server-Sent Events — no page refresh needed).
 - A **🕓 Recent changes** feed on the dashboard shows *who changed what and when*.
+- In hosted mode the server re-checks the session and role on **every admin action**, so the
+  browser-only bypass above does not apply.
 
 ---
 
-## 🔐 Accounts (website mode)
+## 🔐 Accounts and roles
 
-- **First admin** is created automatically on first launch from the environment
-  (default: user `admin` / password `qwert` — **change these when deploying for real**).
-- The first admin can add more admins from the dashboard: **➕ Add Admin**
-  (username, password, optional display name). New admins just log in from any device.
-- **Every save is logged** in the change feed with the admin's display name.
-- Sessions last 30 days; use **Logout** on shared computers.
+Every install starts with **one protected head admin**:
+
+- Username: **`Tharana is the Goat`**.
+- The password is supplied privately with the owner's handover. It is never stored in this repo,
+  never written to logs, and never placed in exported league data — only a salted hash is kept.
+- The head admin cannot be removed, renamed or demoted, including from the Admins panel.
+- The head admin can change their own password in the **Change password** settings panel; the new
+  password must be **at least 8 characters**.
+
+Head-only **Admins** panel (`👥 Admins` on the dashboard):
+
+- Add an admin with their own username + password, or **generate a one-time password** to share
+  privately (shown once, never written to the activity feed).
+- Usernames are unique and case-insensitive; spaces are allowed.
+- Remove an admin after a confirmation. Their existing sessions stop working immediately.
+- Reset another admin's password. That admin is signed out and must use the new password.
+- Regular admins keep every league/news/fan management ability, but cannot open the Admins panel or
+  touch other accounts.
+
+Login security:
+
+- The failure message is always **`Wrong username or password`** so it never reveals whether an
+  account exists.
+- After **5 failed attempts**, that username is locked out for **5 minutes** (per client IP on the
+  server; per browser in local mode).
+- Sessions live in **sessionStorage**, so closing the browser or pressing **Log out** ends them.
+  Hosted signed tokens also expire after 30 days; role and password changes invalidate old tokens.
+- Login, result edits, tournament create/delete, admin add/remove/reset and password changes are
+  logged with the acting admin's username. Passwords are never logged.
+
+Storage details:
+
+- Local/browser-only mode uses **PBKDF2-SHA256** (210,000 iterations, random salt) and keeps account
+  hashes separately from public league state, so they are not included in `/api/state` or backups.
+- Hosted mode uses **scrypt** hashes in `users.json` (or Redis) and HMAC-signed sessions.
 
 ---
 
@@ -59,6 +114,8 @@ with **per-admin accounts**, a **live change feed**, and **real-time updates** f
 
 - Ranking: **Points → Goal Difference → Goals For** (then name). Rows in the
   **QUALIFY** zone are the teams that go through (green highlight).
+- Group fixtures are **always single-leg**, including when a double round-robin creates a home and
+  an away meeting. Two-leg ties belong to the knockout bracket only.
 
 ### 🏅 Overall Rankings + advice
 - The 🏅 **Rankings** tab lists every team everywhere: combined standings with all stats,
@@ -75,14 +132,43 @@ with **per-admin accounts**, a **live change feed**, and **real-time updates** f
 - Rounds are derived automatically: 8 teams → QF → SF → Final; 16 → R16 → QF → SF → Final; etc.
 - Qualifiers are **pre-filled automatically** (winners, runners-up, then wildcards by points);
   the admin can override any pick before creating the bracket.
-- Optional **penalty shootouts** for tied knockout games; winners auto-advance;
-  the Champion gets a trophy banner.
+- Knockout rounds can be configured as **single-leg or two-leg** ties; group fixtures never use a
+  second leg. Aggregate scores, away goals, extra time and optional **penalty shootouts** are
+  supported, winners auto-advance, and the Champion gets a trophy banner.
 
 ### Admin controls
 - Create / rename / delete tournaments; add / rename / delete groups; add / remove / move teams.
 - Record, edit, delete match results per group; choose qualify counts + wildcards;
   build, edit and reset the knockout bracket.
 - **Export Backup** (download JSON) / **Import Backup** (restore or migrate into the shared site).
+
+### Club newsroom and matchday
+- An admin-editable announcement banner in **info / warning / urgent** styles. Visitors can dismiss
+  it; the dismissal resets automatically whenever the message changes.
+- Home-feed fixture strip with team filter and a remembered **My team**, local-time kickoffs and
+  `.ics` calendar downloads for Google Calendar, Apple Calendar and Outlook.
+- Animated honours counters and a champion wall that builds itself from finished tournaments.
+- News articles with categories, cover images, hero/latest layouts, category filters, article pages
+  and share links.
+- A full match-report page for every fixture/result: score, scorers, lineups, MOTM, report body and a
+  screenshot gallery, plus a report editor for admins.
+
+### Fan Zone
+- **Predictions** lock automatically at kickoff and score **3 points** for an exact score /
+  **1 point** for the correct result, with a fan leaderboard.
+- **Man of the Match** voting is one vote per device per match; admins can close, reopen and confirm
+  the winner.
+- **Fantasy Team of the Week** uses a best-XI pitch graphic and one submitted XI per device per round.
+- **Polls** on the front page and Fan Zone use one vote per device, animated result bars and
+  admin-controlled open/closed state.
+- Fan voting needs no account. When hosted, votes are re-checked by the server in `/api/fan`, so the
+  one-vote rule cannot be bypassed by editing local storage.
+
+### Players, rankings and spotlight
+- Player profiles track XP and levels from wins, draws, goals, clean sheets and appearances, plus an
+  admin XP bonus. Automatic and manual badges are supported.
+- Admin power rankings with rise/fall arrows and notes.
+- An admin-picked **Player of the Month** spotlight on Home.
 
 ---
 
@@ -101,17 +187,23 @@ On either one, **anyone with the link sees admin changes live** — only logged-
 can edit — plus the 🕓 Recent changes feed shows *who changed what*.
 
 ### Option A — Vercel (free, quick public URL) ⭐
-1. Create a free **Upstash Redis** database → open the **REST API** tab →
-   copy the **REST URL** and **REST Token**.
+1. **Create storage (two easy choices — no app code changes either way):**
+   - **Vercel KV (easiest — no extra signup):** Vercel dashboard → your project → **Storage** tab →
+     **Create Database → KV (Redis)** → connect it to your project.
+     It auto-adds `KV_REST_API_URL` + `KV_REST_API_TOKEN` to your env vars.
+   - **Upstash Redis:** create a free database at upstash.com → open the **REST API** tab →
+     copy the **REST URL** and **REST Token**.
 2. Push this folder to a GitHub repo. The `api/` folder and `vercel.json` are pre-configured.
 3. On Vercel: **Add New → Project → Import** the repo.
    Framework preset: **Other** · no build step, no start command needed.
-4. Add these **Environment Variables**:
-   - `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` (from step 1)
+4. Make sure these **Environment Variables** exist (Project → Settings → Environment Variables):
+   - `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` (Upstash) **or**
+     `KV_REST_API_URL` + `KV_REST_API_TOKEN` (added automatically by Vercel KV)
    - `SECRET` — a random string (keeps admin sessions valid across redeploys)
-   - `ADMIN_USER` / `ADMIN_PASSWORD` — the first admin (default `admin` / `qwert`)
+   - `ADMIN_USER` / `ADMIN_PASSWORD` — **optional** first-run override. Leave them unset to keep the
+     built-in head admin. If you set one, set both; they only seed a fresh deployment.
 5. **Deploy** → you get `https://your-league.vercel.app`. Share it with everyone.
-6. Log in as the first admin and add the other admins from the dashboard (➕ Add Admin).
+6. Log in as the head admin and add the other admins from the dashboard (👥 Admins).
 
 > On Vercel the browser polls `/api/state` every ~4 seconds, so another admin's change
 > appears almost immediately and the Recent changes feed refreshes on its own.
@@ -120,7 +212,8 @@ can edit — plus the 🕓 Recent changes feed shows *who changed what*.
 1. Push this folder to a GitHub repo.
 2. On Render: **New → Web Service**, pick the repo.
 3. Build command: leave empty · Start command: `node server.js`.
-4. Add env vars `ADMIN_USER` and `ADMIN_PASSWORD` (strong password!) and `SECRET`.
+4. Add a strong `SECRET`. Optionally add `ADMIN_USER` + `ADMIN_PASSWORD` if you want a different
+   first-run head admin instead of the built-in one.
 5. Deploy — Render gives you a public HTTPS URL like `https://your-league.onrender.com`.
 6. Optional: add a **Persistent Disk** mounted at `/data` so data survives redeploys.
 
@@ -147,12 +240,14 @@ For a quick public link while your PC is on (e.g. to test with admins), use a tu
 |-----|---------|---------|
 | `PORT` | `8123` | HTTP port (long-running hosts) |
 | `DATA_DIR` | `./data` | Folder for `db.json` + `users.json` (long-running hosts) |
-| `ADMIN_USER` | `admin` | First admin username (created on first launch) |
-| `ADMIN_PASSWORD` | `qwert` | First admin password — **set a real one in production** |
+| `ADMIN_USER` | unset | Optional first-run head admin username (fresh deployment only) |
+| `ADMIN_PASSWORD` | unset | Optional first-run head admin password; set with `ADMIN_USER` or leave both unset |
 | `SECRET` | dev-only | Random string for admin sessions — set it in production |
 | `OPEN_BROWSER` | `1` | Set `0` to disable auto-opening a browser on `npm start` |
-| `UPSTASH_REDIS_REST_URL` | – | Redis REST URL (Vercel only) |
-| `UPSTASH_REDIS_REST_TOKEN` | – | Redis REST token (Vercel only) |
+| `UPSTASH_REDIS_REST_URL` | – | Redis REST URL — Upstash (or use Vercel KV below) |
+| `UPSTASH_REDIS_REST_TOKEN` | – | Redis REST token — Upstash |
+| `KV_REST_API_URL` | – | Redis REST URL — **Vercel KV** (added automatically when you connect a KV store) |
+| `KV_REST_API_TOKEN` | – | Redis REST token — Vercel KV |
 | `REDIS_PREFIX` | `fcm:` | Key prefix for Redis (Vercel only) |
 
 > 💡 **Data**: long-running hosts keep everything in `DATA_DIR`
@@ -170,14 +265,15 @@ For a quick public link while your PC is on (e.g. to test with admins), use a tu
 npm test
 ```
 
-Runs four suites (zero external dependencies):
+Runs five suites (zero external dependencies):
 
 | Suite | What it covers |
 |-------|----------------|
-| `test.js` | App logic: groups, tables, qualify counts, wildcards, seeding, brackets, auto-advance, migration, rankings, advice |
-| `render-smoke.js` | Rendering: read-only + admin views, brackets, animations markup |
-| `api-test.js` | Backend: signed sessions (login/logout/verify), public read, shared saves, change feed, admin-created accounts, SSE broadcasts, Redis storage adapter (via mock REST) |
-| `sync-test.js` | Browser↔server sync: SSE host (instant push) + serverless host (Vercel-style polling), login, authenticated saves, live updates, activity feed, no-render-when-unchanged |
+| `test.js` | App logic: local admin accounts, PBKDF2 login, lockout, head-only actions, groups, single-leg group fixtures (including double round-robin), tables, qualify counts, wildcards, seeding, two-leg knockout, migration, rankings, advice |
+| `render-smoke.js` | Rendering: read-only + head-admin views, brackets, animations markup |
+| `feature-smoke.js` | Every public route, empty states, XSS escaping, announcement dismissal, fixture filters/calendar, news, match reports, predictions, MOTM, fantasy, polls and admin CRUD/activity messages |
+| `api-test.js` | Backend: signed sessions (login/logout/verify), public read, shared saves, change feed, head-only account admin, password/reset invalidation, login lockout, SSE broadcasts, `/api/fan` voting rules, Redis storage adapter (via mock REST) |
+| `sync-test.js` | Browser↔server sync: SSE host (instant push) + serverless host (Vercel-style polling), account login, authenticated saves, live updates, activity feed, no-render-when-unchanged |
 
 ---
 

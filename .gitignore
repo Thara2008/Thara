@@ -1,0 +1,6 @@
+# Local server data — never commit (Vercel stores data in Redis instead)
+data/
+
+node_modules/
+.env
+.DS_Store

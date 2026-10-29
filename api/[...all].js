@@ -15,24 +15,25 @@
  *   UPSTASH_REDIS_REST_TOKEN   the REST token from the same DB
  *   SECRET                     random string for admin sessions
  * Optional:
- *   ADMIN_USER / ADMIN_PASSWORD   bootstrap admin (default admin / qwert)
+ *   ADMIN_USER / ADMIN_PASSWORD   optional head-admin override (never committed)
  *   REDIS_PREFIX                  namespacing key (default fcm:)
  * ============================================================ */
 const { redisStorage } = require('../lib/storage');
 const { handleApi, bootstrapAdmin } = require('../lib/handler');
 
 module.exports = async (req, res) => {
+  // Accept Upstash names OR Vercel KV names (both are Redis over REST)
   const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
-const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
   if (!url || !token){
     res.statusCode = 500;
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.end(JSON.stringify({ error: 'Missing UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN env vars.' }));
+    res.end(JSON.stringify({ error: 'Missing Redis env vars. Add UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN (Upstash) or KV_REST_API_URL + KV_REST_API_TOKEN (Vercel KV) in Project → Settings → Environment Variables, then Redeploy.' }));
     return;
   }
   const storage = redisStorage(url, token, process.env.REDIS_PREFIX || 'fcm:');
   try {
-    await bootstrapAdmin(storage, process.env.ADMIN_USER || 'admin', process.env.ADMIN_PASSWORD || 'qwert');
+    await bootstrapAdmin(storage, process.env.ADMIN_USER || '', process.env.ADMIN_PASSWORD || '');
     await handleApi(storage, req, res, { streams: false });
   } catch (e){
     res.statusCode = 500;
