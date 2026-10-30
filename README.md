@@ -25,6 +25,10 @@ shareable hash route: `#home`, `#league`, `#fixtures`, `#news`, `#fans`, `#playe
 `#hall`, `#about`, plus `#news/<id>`, `#match/<matchKey>` and `#player/<id>` detail pages.
 Fan Zone subroutes are `#predict`, `#motm`, `#fantasy` and `#polls`.
 
+The header also has a **global search bar**. It searches every team and shows that team's **next
+fixture** plus the matching fixtures/results, players, news stories, tournaments and site pages.
+Results are keyboard accessible and update as you type.
+
 ---
 
 ## Two ways to use it
@@ -143,6 +147,8 @@ Storage details:
 - **Export Backup** (download JSON) / **Import Backup** (restore or migrate into the shared site).
 
 ### Club newsroom and matchday
+- A global header search across **teams (with their next fixture)**, fixtures/results, players, news,
+  tournaments and site pages, with keyboard navigation and safe escaped output.
 - An admin-editable announcement banner in **info / warning / urgent** styles. Visitors can dismiss
   it; the dismissal resets automatically whenever the message changes.
 - Home-feed fixture strip with team filter and a remembered **My team**, local-time kickoffs and
@@ -271,7 +277,7 @@ Runs five suites (zero external dependencies):
 |-------|----------------|
 | `test.js` | App logic: local admin accounts, PBKDF2 login, lockout, head-only actions, groups, single-leg group fixtures (including double round-robin), tables, qualify counts, wildcards, seeding, two-leg knockout, migration, rankings, advice |
 | `render-smoke.js` | Rendering: read-only + head-admin views, brackets, animations markup |
-| `feature-smoke.js` | Every public route, empty states, XSS escaping, announcement dismissal, fixture filters/calendar, news, match reports, predictions, MOTM, fantasy, polls and admin CRUD/activity messages |
+| `feature-smoke.js` | Every public route, global search (teams/next fixture/players/news/pages), empty states, XSS escaping, announcement dismissal, fixture filters/calendar, news, match reports, predictions, MOTM, fantasy, polls and admin CRUD/activity messages |
 | `api-test.js` | Backend: signed sessions (login/logout/verify), public read, shared saves, change feed, head-only account admin, password/reset invalidation, login lockout, SSE broadcasts, `/api/fan` voting rules, Redis storage adapter (via mock REST) |
 | `sync-test.js` | Browser↔server sync: SSE host (instant push) + serverless host (Vercel-style polling), account login, authenticated saves, live updates, activity feed, no-render-when-unchanged |
 

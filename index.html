@@ -71,6 +71,26 @@ const FAN_SUB_META = {
   fantasy: { label: 'Team of the Week', icon: '🧩' },
   polls:   { label: 'Polls',       icon: '📊' }
 };
+/* Searchable destinations outside the individual teams, players, fixtures and stories. */
+const SEARCH_PAGES = [
+  { label: 'Home', hint: 'Latest fixtures, news and fan polls', tab: 'home', keywords: 'home start homepage' },
+  { label: 'League', hint: 'Tables, results and knockout brackets', tab: 'league', keywords: 'league table standings groups tournament bracket' },
+  { label: 'Fixtures & results', hint: 'Kickoff times, upcoming matches and final scores', tab: 'fixtures', keywords: 'fixtures schedule calendar upcoming next results scores' },
+  { label: 'News', hint: 'Match reports, transfers and club stories', tab: 'news', keywords: 'news article story reports transfers interviews' },
+  { label: 'Fan Zone', hint: 'Predictions, MOTM, fantasy and polls', tab: 'fans', keywords: 'fans fan zone vote voting community' },
+  { label: 'Predictions', hint: 'Predict match scores and climb the leaderboard', tab: 'fans', sub: 'predict', keywords: 'prediction predictions score scores leaderboard' },
+  { label: 'MOTM vote', hint: 'Vote for the Man of the Match', tab: 'fans', sub: 'motm', keywords: 'motm man of the match vote voting' },
+  { label: 'Team of the Week', hint: 'Pick or view the fantasy XI', tab: 'fans', sub: 'fantasy', keywords: 'fantasy team of the week xi picks' },
+  { label: 'Polls', hint: 'Vote in the latest fan polls', tab: 'fans', sub: 'polls', keywords: 'polls vote voting questions' },
+  { label: 'Players', hint: 'Squads, XP, levels and player profiles', tab: 'players', keywords: 'players squad xp level profile badges' },
+  { label: 'Power Rankings', hint: 'Team form, movement and rankings', tab: 'power', keywords: 'power rankings ranking form movement' },
+  { label: 'Honours', hint: 'Trophies, champions and club history', tab: 'hall', keywords: 'honours honors trophy trophies champions history hall of fame' },
+  { label: 'About', hint: 'Club story, staff, links and sponsors', tab: 'about', keywords: 'about club staff sponsors links contact' }
+];
+const SEARCH_STOP_WORDS = new Set([
+  'a', 'an', 'and', 'any', 'at', 'for', 'in', 'next', 'of', 'on', 'or', 'the', 'to', 'upcoming',
+  'fixture', 'fixtures', 'game', 'games', 'match', 'matches', 'result', 'results', 'team', 'teams', 'vs'
+]);
 const PLATFORMS = {
   discord:   { label: 'Discord',   icon: '🎮' },
   whatsapp:  { label: 'WhatsApp',  icon: '💬' },
@@ -616,6 +636,236 @@ function teamOptionsGlobal(){
     groupsOf(t).forEach(g => g.teams.forEach(team => out.push({ id: team.id, name: team.name, tournamentId: t.id, tournament: t.name, group: g.name })));
   });
   return out;
+}
+/* ---------- global search ---------- */
+function searchNormalize(value){
+  let s = String(value == null ? '' : value).toLowerCase();
+  if (typeof s.normalize === 'function'){
+    try { s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); } catch (e){ /* older engines */ }
+  }
+  return s.replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+}
+function searchTokens(query){
+  return searchNormalize(query).split(' ').filter(token => token && !SEARCH_STOP_WORDS.has(token));
+}
+function searchScore(haystack, query){
+  const phrase = searchNormalize(query);
+  const tokens = searchTokens(query);
+  const text = searchNormalize(haystack);
+  if (!tokens.length || !text) return 0;
+  if (text === phrase) return 100;
+  if (phrase && text.indexOf(phrase) === 0) return 85;
+  if (phrase && text.indexOf(phrase) !== -1) return 70;
+  if (tokens.every(token => text.indexOf(token) !== -1)){
+    const words = text.split(' ');
+    return tokens.every(token => words.some(word => word.indexOf(token) === 0)) ? 55 : 40;
+  }
+  return 0;
+}
+function nextFixtureForTeam(team){
+  if (!team) return null;
+  return upcomingMatches().find(match =>
+    match.t.id === team.tournamentId &&
+    (match.homeId === team.id || match.awayId === team.id)
+  ) || null;
+}
+function searchTeamResults(query){
+  return teamOptionsGlobal()
+    .map(team => {
+      const score = searchScore(team.name, query);
+      return score ? { team, score, next: nextFixtureForTeam(team) } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score || a.team.name.localeCompare(b.team.name))
+    .slice(0, 4);
+}
+function searchMatchResults(query){
+  return allMatches()
+    .filter(match => match.homeId && match.awayId)
+    .map(match => ({
+      match,
+      score: searchScore([match.home, match.away, match.round, match.t.name].join(' '), query)
+    }))
+    .filter(entry => entry.score)
+    .sort((a, b) => {
+      if (a.match.finished !== b.match.finished) return a.match.finished ? 1 : -1;
+      const at = kickoffMs(a.match.m) || Number.MAX_SAFE_INTEGER;
+      const bt = kickoffMs(b.match.m) || Number.MAX_SAFE_INTEGER;
+      return b.score - a.score || at - bt;
+    })
+    .slice(0, 6);
+}
+function searchPlayerResults(query){
+  return (state.site.players || [])
+    .map(player => ({
+      player,
+      team: playerTeamName(player),
+      score: searchScore([player.name, playerTeamName(player), player.position || ''].join(' '), query)
+    }))
+    .filter(entry => entry.score)
+    .sort((a, b) => b.score - a.score || a.player.name.localeCompare(b.player.name))
+    .slice(0, 5);
+}
+function searchNewsResults(query){
+  return (state.site.news || [])
+    .map(post => ({
+      post,
+      score: searchScore([post.title, post.category, post.author, post.body].join(' '), query)
+    }))
+    .filter(entry => entry.score)
+    .sort((a, b) => b.score - a.score || (Number(b.post.createdAt) || 0) - (Number(a.post.createdAt) || 0))
+    .slice(0, 4);
+}
+function searchTournamentResults(query){
+  return state.tournaments
+    .map(tournament => ({
+      tournament,
+      score: searchScore(tournament.name, query)
+    }))
+    .filter(entry => entry.score)
+    .sort((a, b) => b.score - a.score || (Number(b.tournament.createdAt) || 0) - (Number(a.tournament.createdAt) || 0))
+    .slice(0, 4);
+}
+function searchPageResults(query){
+  return SEARCH_PAGES
+    .map(page => ({
+      page,
+      score: searchScore([page.label, page.hint, page.keywords].join(' '), query)
+    }))
+    .filter(entry => entry.score)
+    .sort((a, b) => b.score - a.score || a.page.label.localeCompare(b.page.label))
+    .slice(0, 5);
+}
+function searchResultsFor(query){
+  const empty = { teams: [], matches: [], players: [], news: [], tournaments: [], pages: [], total: 0 };
+  if (!searchTokens(query).length) return empty;
+  const teams = searchTeamResults(query);
+  const matches = searchMatchResults(query);
+  const players = searchPlayerResults(query);
+  const news = searchNewsResults(query);
+  const tournaments = searchTournamentResults(query);
+  const pages = searchPageResults(query);
+  return {
+    teams, matches, players, news, tournaments, pages,
+    total: teams.length + matches.length + players.length + news.length + tournaments.length + pages.length
+  };
+}
+function searchWhen(match){
+  return match && match.kickoff ? localDateTime(match.kickoff) : 'Kickoff time TBC';
+}
+function searchSectionHTML(title, rowsHTML, count){
+  if (!rowsHTML) return '';
+  return `<section class="search-section">
+    <div class="search-section-title"><span>${esc(title)}</span><small>${count}</small></div>
+    ${rowsHTML}
+  </section>`;
+}
+function searchMatchRowHTML(match, label){
+  const score = match.finished
+    ? `${match.hs == null ? 0 : match.hs} &ndash; ${match.as == null ? 0 : match.as}`
+    : 'vs';
+  const detail = [label, searchWhen(match), match.round].filter(Boolean).join(' · ');
+  return `<button type="button" class="search-row" data-action="open-match" data-id="${esc(match.key)}">
+    <span class="search-mark" aria-hidden="true">⚽</span>
+    <span class="search-copy"><strong>${esc(match.home)} <span class="search-vs">${score}</span> ${esc(match.away)}</strong><small>${esc(detail)}</small></span>
+    <span class="search-chevron" aria-hidden="true">›</span>
+  </button>`;
+}
+function searchTeamRowHTML(entry){
+  const team = entry.team;
+  const next = entry.next;
+  return `<div class="search-team-card">
+    <div class="search-team-top">
+      <span class="search-mark" aria-hidden="true">🛡️</span>
+      <span class="search-copy"><strong>${esc(team.name)}</strong><small>${esc(team.tournament)} · ${esc(team.group)}</small></span>
+      <button type="button" class="btn small" data-action="open-tournament" data-id="${esc(team.tournamentId)}">League</button>
+    </div>
+    ${next ? `<div class="search-next">
+      <span class="search-next-label">Next fixture</span>
+      <span class="search-next-match">${esc(next.home)} <span class="search-vs">vs</span> ${esc(next.away)}</span>
+      <small>${esc(searchWhen(next))} · ${esc(next.round)}</small>
+      <button type="button" class="btn primary small" data-action="open-match" data-id="${esc(next.key)}">View</button>
+    </div>` : `<div class="search-next muted">
+      <span class="search-next-label">Next fixture</span>
+      <span>No upcoming fixture scheduled.</span>
+    </div>`}
+  </div>`;
+}
+function searchPlayerRowHTML(entry){
+  const detail = [entry.player.position || 'Player', entry.team].filter(Boolean).join(' · ');
+  return `<button type="button" class="search-row" data-action="open-player" data-id="${esc(entry.player.id)}">
+    <span class="search-mark" aria-hidden="true">👤</span>
+    <span class="search-copy"><strong>${esc(entry.player.name)}</strong><small>${esc(detail)}</small></span>
+    <span class="search-chevron" aria-hidden="true">›</span>
+  </button>`;
+}
+function searchNewsRowHTML(entry){
+  const detail = [entry.post.category, newsDate(entry.post)].filter(Boolean).join(' · ');
+  return `<button type="button" class="search-row" data-action="open-news" data-id="${esc(entry.post.id)}">
+    <span class="search-mark" aria-hidden="true">📰</span>
+    <span class="search-copy"><strong>${esc(entry.post.title)}</strong><small>${esc(detail)}</small></span>
+    <span class="search-chevron" aria-hidden="true">›</span>
+  </button>`;
+}
+function searchTournamentRowHTML(entry){
+  const tournament = entry.tournament;
+  const detail = `${groupsOf(tournament).length} group(s) · ${allTeams(tournament).length} team(s)`;
+  return `<button type="button" class="search-row" data-action="open-tournament" data-id="${esc(tournament.id)}">
+    <span class="search-mark" aria-hidden="true">🏆</span>
+    <span class="search-copy"><strong>${esc(tournament.name)}</strong><small>${esc(detail)}</small></span>
+    <span class="search-chevron" aria-hidden="true">›</span>
+  </button>`;
+}
+function searchPageRowHTML(entry){
+  const page = entry.page;
+  const action = page.sub ? 'search-fan' : 'site-go';
+  return `<button type="button" class="search-row" data-action="${action}" data-val="${esc(page.tab)}" data-sub="${esc(page.sub || '')}">
+    <span class="search-mark" aria-hidden="true">↗</span>
+    <span class="search-copy"><strong>${esc(page.label)}</strong><small>${esc(page.hint)}</small></span>
+    <span class="search-chevron" aria-hidden="true">›</span>
+  </button>`;
+}
+function globalSearchResultsHTML(query){
+  const q = String(query == null ? '' : query);
+  if (!q.trim()) return '';
+  if (!searchTokens(q).length){
+    return `<div class="search-empty"><strong>Keep typing</strong><span>Search for a team, player, fixture, story or page.</span></div>`;
+  }
+  const results = searchResultsFor(q);
+  if (!results.total){
+    return `<div class="search-empty"><strong>No results for “${esc(q.trim())}”</strong><span>Try a team name, player, fixture, story or page.</span></div>`;
+  }
+  const sections = [
+    searchSectionHTML('Teams', results.teams.map(searchTeamRowHTML).join(''), results.teams.length),
+    searchSectionHTML('Fixtures & results', results.matches.map(entry => searchMatchRowHTML(entry.match, entry.match.finished ? 'Result' : 'Upcoming')).join(''), results.matches.length),
+    searchSectionHTML('Players', results.players.map(searchPlayerRowHTML).join(''), results.players.length),
+    searchSectionHTML('News', results.news.map(searchNewsRowHTML).join(''), results.news.length),
+    searchSectionHTML('Tournaments', results.tournaments.map(searchTournamentRowHTML).join(''), results.tournaments.length),
+    searchSectionHTML('Pages', results.pages.map(searchPageRowHTML).join(''), results.pages.length)
+  ].join('');
+  return `<div class="search-summary"><strong>Search results</strong><span>${results.total} found</span></div>${sections}`;
+}
+function updateSearchResults(value){
+  const q = String(value == null ? '' : value);
+  const input = document.getElementById('siteSearch');
+  const clear = document.getElementById('siteSearchClear');
+  if (input && typeof input.setAttribute === 'function') input.setAttribute('aria-expanded', q.trim() ? 'true' : 'false');
+  if (clear) clear.hidden = !q.trim();
+  const box = document.getElementById('siteSearchResults');
+  if (!box) return;
+  if (!q.trim()){
+    box.hidden = true;
+    box.innerHTML = '';
+    return;
+  }
+  box.innerHTML = globalSearchResultsHTML(q);
+  box.hidden = false;
+}
+function closeGlobalSearch(){
+  const box = document.getElementById('siteSearchResults');
+  const input = document.getElementById('siteSearch');
+  if (box) box.hidden = true;
+  if (input && typeof input.setAttribute === 'function') input.setAttribute('aria-expanded', 'false');
 }
 function playerById(id){ return (state.site.players || []).find(p => p.id === id) || null; }
 function playersForTeam(teamId){ return (state.site.players || []).filter(p => p.teamId === teamId); }
@@ -1295,6 +1545,13 @@ function headerHTML(){
     <div class="brand" data-action="site-go" data-val="home" role="link" tabindex="0" aria-label="Ceylon FC home">
       ${crestHTML(state.site.logo, 'brand-icon', 'Ceylon FC logo')}
       <div><h1>Ceylon FC</h1><p>${esc(season)} · FC Mobile league · ${n} tournament(s)</p></div>
+    </div>
+    <div class="site-search" role="search">
+      <span class="site-search-icon" aria-hidden="true">🔍</span>
+      <label class="sr-only" for="siteSearch">Search teams, fixtures, players, news and pages</label>
+      <input id="siteSearch" type="search" placeholder="Search teams, fixtures, players…" autocomplete="off" spellcheck="false" aria-controls="siteSearchResults" aria-expanded="false">
+      <button type="button" class="site-search-clear" id="siteSearchClear" data-action="search-clear" aria-label="Clear search" hidden>×</button>
+      <div class="site-search-results" id="siteSearchResults" role="region" aria-label="Search results" aria-live="polite" hidden></div>
     </div>
     <div class="top-actions">
       ${accountAreaHTML()}
@@ -5243,6 +5500,18 @@ function handle(action, elId, el){
       navigate(dest);
       return;
     }
+    case 'search-clear': {
+      const input = document.getElementById('siteSearch');
+      if (input){ input.value = ''; if (typeof input.focus === 'function') input.focus(); }
+      updateSearchResults('');
+      return;
+    }
+    case 'search-fan': {
+      const sub = (el && el.dataset && el.dataset.sub) ? el.dataset.sub : '';
+      if (FAN_SUBS.indexOf(sub) !== -1) fanSub = sub;
+      navigateHash('#' + (FAN_SUBS.indexOf(sub) !== -1 ? sub : 'predict'));
+      return;
+    }
     case 'fixture-myteam': {
       if (fixtureTeamFilter){
         myTeamWrite(fixtureTeamFilter);
@@ -5464,6 +5733,10 @@ function handle(action, elId, el){
       logMsg = 'Admin updated the power rankings';
       break;
     }
+    case 'open-news':
+      if (!newsById(elId)){ flash = '⚠️ That story could not be found.'; render(); return; }
+      navigateHash('#news/' + encodeURIComponent(elId));
+      return;
     case 'open-player':
       if (!playerById(elId)){ flash = '⚠️ That player could not be found.'; render(); return; }
       navigateHash('#player/' + encodeURIComponent(elId));
@@ -6467,6 +6740,16 @@ document.addEventListener('click', e => {
   e.preventDefault();
   handle(el.dataset.action, el.dataset.id || null, el);
 });
+document.addEventListener('input', e => {
+  if (e.target && e.target.id === 'siteSearch') updateSearchResults(e.target.value);
+});
+document.addEventListener('focusin', e => {
+  if (e.target && e.target.id === 'siteSearch' && String(e.target.value || '').trim()) updateSearchResults(e.target.value);
+});
+document.addEventListener('click', e => {
+  const target = e.target;
+  if (target && target.closest && !target.closest('.site-search')) closeGlobalSearch();
+});
 document.addEventListener('change', e => {
   const el = e.target;
   if (el && el.id === 'wizardTeams'){ if (groupWizardDraft) groupWizardDraft.raw = el.value || ''; return; }
@@ -6608,6 +6891,31 @@ document.addEventListener('drop', e => {
   if (id) groupWizardMove(id, Number(drop.getAttribute('data-wizard-drop')));
 });
 document.addEventListener('keydown', e => {
+  if (e.target && e.target.id === 'siteSearch'){
+    const box = document.getElementById('siteSearchResults');
+    if (e.key === 'Escape'){
+      closeGlobalSearch();
+      if (typeof e.target.blur === 'function') e.target.blur();
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'ArrowDown'){
+      const first = box && !box.hidden && typeof box.querySelector === 'function'
+        ? (box.querySelector('.search-row') || box.querySelector('button[data-action]'))
+        : null;
+      if (first){
+        e.preventDefault();
+        if (e.key === 'ArrowDown') first.focus();
+        else if (typeof first.click === 'function') first.click();
+      }
+      return;
+    }
+  }
+  if (e.key === 'Escape' && e.target && e.target.closest && e.target.closest('.site-search')){
+    closeGlobalSearch();
+    const input = document.getElementById('siteSearch');
+    if (input && typeof input.focus === 'function') input.focus();
+    return;
+  }
   if (e.key === 'Enter'){
     const fm = e.target.closest && e.target.closest('form[data-form]');
     if (fm){

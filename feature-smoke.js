@@ -216,6 +216,23 @@ function runFeatures(){
   T('home honours expose count-up values', count('data-count="') >= 3 && has('data-count="3"'));
   T('home explains local-time fixtures and calendar exports',
     has('local time zone') && has('Add to calendar'));
+  T('global search bar is available in the header',
+    has('id="siteSearch"') && has('id="siteSearchResults"') && has('aria-label="Clear search"'));
+
+  const lionsSearch = globalSearchResultsHTML('Lions');
+  T('global search finds a team and its next fixture',
+    lionsSearch.indexOf('data-action="open-tournament"') !== -1 &&
+    lionsSearch.indexOf('Next fixture') !== -1 &&
+    lionsSearch.indexOf('Lions <span class="search-vs">vs</span> Eagles') !== -1);
+  T('global search finds players, news and site pages',
+    globalSearchResultsHTML('Lions Star').indexOf('data-action="open-player"') !== -1 &&
+    globalSearchResultsHTML('Cup final preview').indexOf('data-action="open-news"') !== -1 &&
+    globalSearchResultsHTML('predictions').indexOf('data-action="search-fan"') !== -1);
+  T('global search is case-insensitive and reports empty results',
+    globalSearchResultsHTML('lIoNs').indexOf('Lions') !== -1 &&
+    globalSearchResultsHTML('no-such-entity').indexOf('No results for') !== -1);
+  T('global search escapes user input', globalSearchResultsHTML('<img src=x onerror=alert(1)>').indexOf('&lt;img') !== -1 &&
+    globalSearchResultsHTML('<img src=x onerror=alert(1)>').indexOf('<img') === -1);
 
   const allStrips = count('class="strip-match');
   fixtureTeamFilter = 'a1';

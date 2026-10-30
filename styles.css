@@ -2068,3 +2068,115 @@ input:focus,select:focus,textarea:focus{
   .suiii,.suiii-card,.suiii-num,.suiii-word .i{ animation:none; opacity:1; transform:none; }
   .suiii-bit{ display:none; }
 }
+
+/* =========================================================
+   Global search: teams, next fixtures, players, news, pages
+   ========================================================= */
+.topbar{ overflow:visible; }
+.brand{ order:1; }
+.site-search{ order:2; position:relative; flex:1 1 300px; min-width:0; max-width:520px; }
+.top-actions{ order:3; }
+.site-nav{ order:4; }
+
+.site-search input{
+  width:100%; height:42px; padding:0 44px 0 42px;
+  border:1px solid var(--line-strong); border-radius:999px;
+  background:rgba(255,255,255,.055); color:var(--txt);
+  font-size:13.5px; line-height:1;
+}
+.site-search input::placeholder{ color:var(--dim); opacity:.9; }
+.site-search input::-webkit-search-cancel-button{ -webkit-appearance:none; appearance:none; }
+.site-search input:focus{
+  background:rgba(9,26,19,.98); border-color:rgba(255,242,196,.7);
+  box-shadow:0 0 0 3px rgba(255,242,196,.12), inset 0 1px 2px rgba(0,0,0,.25);
+}
+.site-search-icon{
+  position:absolute; left:14px; top:21px; transform:translateY(-50%);
+  font-size:15px; line-height:1; opacity:.8; pointer-events:none; z-index:1;
+}
+.site-search-clear{
+  position:absolute; right:8px; top:21px; transform:translateY(-50%);
+  width:27px; height:27px; display:grid; place-items:center;
+  border:0; border-radius:50%; background:rgba(255,255,255,.09); color:var(--txt);
+  font-size:18px; line-height:1; cursor:pointer; z-index:1;
+}
+.site-search-clear[hidden]{ display:none; }
+.site-search-results{
+  position:absolute; left:0; right:0; top:calc(100% + 8px); z-index:90;
+  max-height:min(70vh,560px); overflow:auto; overscroll-behavior:contain;
+  border:1px solid rgba(226,238,224,.22); border-radius:16px;
+  background:rgba(7,20,15,.985);
+  box-shadow:0 30px 70px -22px rgba(0,0,0,.95), inset 0 1px 0 rgba(255,255,255,.06);
+  -webkit-backdrop-filter:blur(18px) saturate(130%); backdrop-filter:blur(18px) saturate(130%);
+  scrollbar-width:thin;
+}
+.site-search-results[hidden]{ display:none; }
+.search-summary{
+  position:sticky; top:0; z-index:2; display:flex; align-items:center; justify-content:space-between; gap:12px;
+  padding:12px 14px; border-bottom:1px solid var(--line);
+  background:rgba(7,20,15,.98); color:var(--txt);
+}
+.search-summary strong{ font-size:12px; letter-spacing:.1em; text-transform:uppercase; color:var(--gold); }
+.search-summary span{ font-size:11.5px; color:var(--dim); }
+.search-section{ border-bottom:1px solid var(--line); }
+.search-section:last-child{ border-bottom:0; }
+.search-section-title{
+  display:flex; align-items:center; justify-content:space-between; gap:10px;
+  padding:10px 14px 6px; color:var(--dim);
+  font-size:10.5px; font-weight:700; letter-spacing:.12em; text-transform:uppercase;
+}
+.search-section-title small{
+  min-width:22px; padding:1px 7px; border:1px solid var(--line); border-radius:999px;
+  text-align:center; font-size:10px; letter-spacing:.02em; color:var(--dim);
+}
+.search-row{
+  width:100%; display:flex; align-items:center; gap:10px; padding:10px 14px;
+  border:0; border-top:1px solid rgba(226,238,224,.055); background:transparent;
+  color:var(--txt); font:inherit; text-align:left; cursor:pointer;
+  transition:background-color .16s ease, transform .16s var(--ease);
+}
+.search-row:active{ transform:scale(.995); }
+.search-mark{
+  width:30px; height:30px; flex:0 0 auto; display:grid; place-items:center;
+  border:1px solid var(--line); border-radius:9px; background:rgba(255,255,255,.045);
+  font-size:14px;
+}
+.search-copy{ min-width:0; flex:1 1 auto; display:flex; flex-direction:column; gap:1px; }
+.search-copy strong{ font-size:13px; font-weight:650; line-height:1.35; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.search-copy small{ font-size:11.5px; color:var(--dim); line-height:1.35; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.search-vs{ color:var(--gold); font-weight:700; }
+.search-chevron{ flex:0 0 auto; color:var(--dim); font-size:20px; line-height:1; }
+.search-team-card{ border-top:1px solid rgba(226,238,224,.055); padding:10px 14px 12px; }
+.search-team-top{ display:flex; align-items:center; gap:10px; }
+.search-team-top .btn{ flex:0 0 auto; }
+.search-next{
+  display:flex; align-items:center; flex-wrap:wrap; gap:3px 8px;
+  margin:8px 0 0 40px; padding:8px 10px;
+  border:1px solid var(--line); border-radius:10px; background:rgba(255,255,255,.035);
+}
+.search-next.muted{ color:var(--dim); font-size:12px; }
+.search-next-label{ font-size:9.5px; font-weight:700; letter-spacing:.11em; text-transform:uppercase; color:var(--gold); }
+.search-next-match{ font-size:12.5px; font-weight:650; }
+.search-next small{ width:100%; font-size:11.5px; color:var(--dim); }
+.search-next .btn{ margin-left:auto; }
+.search-empty{ padding:18px 16px 20px; display:flex; flex-direction:column; gap:3px; }
+.search-empty strong{ font-size:13.5px; color:var(--txt); }
+.search-empty span{ font-size:12px; color:var(--dim); }
+
+@media (max-width:820px){
+  .top-actions{ order:2; }
+  .site-search{ order:3; flex:1 0 100%; max-width:none; }
+  .site-search-results{ max-height:65vh; }
+}
+@media (max-width:560px){
+  .site-search input{ height:44px; }
+  .site-search-icon{ top:22px; }
+  .site-search-clear{ top:22px; }
+  .search-team-top .btn{ padding:5px 9px; }
+  .search-next{ margin-left:0; }
+}
+@media (hover:hover){
+  .search-row:hover{ background:rgba(255,242,196,.075); }
+  .search-team-card:hover{ background:rgba(255,242,196,.025); }
+  .site-search-clear:hover{ background:rgba(255,255,255,.16); }
+}
