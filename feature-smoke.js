@@ -218,6 +218,12 @@ function runFeatures(){
     has('local time zone') && has('Add to calendar'));
   T('global search bar is available in the header',
     has('id="siteSearch"') && has('id="siteSearchResults"') && has('aria-label="Clear search"'));
+  if (!unlocked){
+    T('visitors never see the change feed on Home', !has('Recent changes') && !has('act-panel'));
+    go('league');
+    T('visitors never see or hear about the change feed on League', !has('Recent changes') && !has('act-panel'));
+    go('home');
+  }
 
   const lionsSearch = globalSearchResultsHTML('Lions');
   T('global search finds a team and its next fixture',
@@ -256,6 +262,46 @@ function runFeatures(){
   dismissAnnouncement();
   render();
   T('dismissed announcement is hidden for visitors', unlocked || !has('announce-banner'));
+
+  /* ---------- main Reg tab + popup ---------- */
+  go('league');
+  handle('open-tournament', 't1');
+  T('tournament page has a shortcut to the Reg tab', has('data-action="reg-open"'));
+  handle('reg-open', 't1');
+  const nav = app.innerHTML;
+  const leagueIdx = nav.indexOf('data-val="league"');
+  const regIdx = nav.indexOf('data-val="reg"');
+  const fixturesIdx = nav.indexOf('data-val="fixtures"');
+  T('Reg is a main tab between League and Fixtures',
+    leagueIdx !== -1 && regIdx > leagueIdx && fixturesIdx > regIdx);
+  T('main Reg tab has optional/explorer copy',
+    has('📝 Reg') && has('Tournament registration') && has('You can ignore this'));
+  T('Reg tab offers a tournament picker', has('data-action="reg-select"') && has('Ceylon Cup'));
+  T('registration tab lists no teams before anyone signs up', has('No teams registered yet'));
+  if (!unlocked){
+    T('visitors do not see registration admin controls',
+      !has('data-action="registration-clear"') && !has('data-action="wizard-import-registrations"'));
+  }
+  handle('registration-open');
+  T('registration popup collects Name, Username and UID',
+    has('id="regName"') && has('id="regUsername"') && has('id="regUid"') && has('Registration is optional'));
+  fill('regName', 'A'); fill('regUsername', 'NewPlayer'); fill('regUid', 'UID-NEW');
+  handle('registration-submit');
+  T('popup validation blocks a too-short name', registrationsOf(state.tournaments[0]).length === 0 &&
+    has('Name must be between'));
+  fill('regName', 'New Lions');
+  handle('registration-submit');
+  T('visitor registration is saved without an admin login', registrationsOf(state.tournaments[0]).length === 1 &&
+    registrationLine(registrationsOf(state.tournaments[0])[0]) === 'NewPlayer |  | UID-NEW');
+  handle('registration-open');
+  fill('regName', 'Impostor'); fill('regUsername', 'newplayer'); fill('regUid', 'uid-new');
+  handle('registration-submit');
+  T('duplicate UID is rejected in the popup', registrationsOf(state.tournaments[0]).length === 1 &&
+    has('UID is already registered'));
+  T('a repeated Username with a new UID is allowed',
+    registrationDuplicate(state.tournaments[0], { name: 'Other', username: 'newplayer', uid: 'UID-OTHER' }) === false);
+  handle('registration-close');
+  T('registration popup can be closed / ignored', !has('id="regName"'));
 
   /* ---------- fixtures + match reports ---------- */
   go('fixtures');
@@ -372,6 +418,7 @@ function runFeatures(){
     handle('announce-save');
     T('admin saves the announcement', state.site.announcement.text === 'Admin wrote a new notice' &&
       state.site.announcement.style === 'warning' && state.site.announcement.enabled === true);
+    T('signed-in admin sees the change feed', has('Recent changes'));
 
     go('fixtures');
     fill('kickoff-t1:g:m2', '2099-04-05T18:30');

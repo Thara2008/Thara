@@ -12,7 +12,7 @@
 <link rel="stylesheet" href="styles.css">
 
 </head>
-<body>
+<body data-app-build="2.2.0-wizard-direct-knockout">
 <div id="app"></div>
 <script>
 'use strict';
@@ -28,6 +28,12 @@ const ADMIN_SESSION_KEY = 'ceylonfc_admin_session_v1';
 const ADMIN_ACTIVITY_KEY = 'ceylonfc_admin_activity_v1';
 const LOGIN_GUARD_KEY = 'ceylonfc_login_guard_v1';
 const PBKDF2_ITERATIONS = 210000;
+/* Public tournament registration. Visitors submit these without an admin login;
+ * the hosted API applies the same validation and duplicate checks as the client. */
+const REG_NAME_MIN = 2, REG_NAME_MAX = 30;
+const REG_USER_MIN = 2, REG_USER_MAX = 30;
+const REG_UID_MIN = 3, REG_UID_MAX = 40;
+const REG_MAX_PER_TOURNAMENT = 256;
 const HEAD_ADMIN_SEED = Object.freeze({
   username: 'tharana is the goat',
   display: 'Tharana is the Goat',
@@ -42,10 +48,11 @@ const HEAD_ADMIN_SEED = Object.freeze({
 const VALID_N = [2, 4, 8, 16, 32, 64];  // legal total qualifiers (power of two)
 const KO_DEFAULT_RULES = { awayGoals: false, extraTime: false };
 const KO_SIZE_CHOICES = [64, 32, 16, 8, 4, 2];
-const SITE_TABS = ['home', 'league', 'fixtures', 'news', 'fans', 'players', 'power', 'hall', 'about'];
+const SITE_TABS = ['home', 'league', 'reg', 'fixtures', 'news', 'fans', 'players', 'power', 'hall', 'about'];
 const SITE_TAB_META = {
   home:     { label: 'Home',         icon: '🏠' },
   league:   { label: 'League',       icon: '🏆' },
+  reg:      { label: 'Reg',          icon: '📝' },
   fixtures: { label: 'Fixtures',     icon: '📅' },
   news:     { label: 'News',         icon: '📰' },
   fans:     { label: 'Fan Zone',     icon: '🎮' },
@@ -75,6 +82,7 @@ const FAN_SUB_META = {
 const SEARCH_PAGES = [
   { label: 'Home', hint: 'Latest fixtures, news and fan polls', tab: 'home', keywords: 'home start homepage' },
   { label: 'League', hint: 'Tables, results and knockout brackets', tab: 'league', keywords: 'league table standings groups tournament bracket' },
+  { label: 'Reg', hint: 'Register a team for a tournament', tab: 'reg', keywords: 'reg register registration sign up team tournament name username uid' },
   { label: 'Fixtures & results', hint: 'Kickoff times, upcoming matches and final scores', tab: 'fixtures', keywords: 'fixtures schedule calendar upcoming next results scores' },
   { label: 'News', hint: 'Match reports, transfers and club stories', tab: 'news', keywords: 'news article story reports transfers interviews' },
   { label: 'Fan Zone', hint: 'Predictions, MOTM, fantasy and polls', tab: 'fans', keywords: 'fans fan zone vote voting community' },
@@ -180,6 +188,13 @@ let fantasyEditing = false;
 let fantasyDraft = null;
 let fantasyError = '';
 
+/* Public tournament registration popup + admin registration management. */
+let regTournamentId = '';              // tournament selected on the main Reg tab
+let registrationModalId = '';          // tournament id whose registration popup is open
+let registrationDraft = { name: '', username: '', uid: '' };
+let registrationError = '';
+let registrationBusy = false;
+
 /* Group Setup Wizard (admin only). Everything lives in memory until Lock. */
 let groupWizardOpen = false;
 let groupWizardStep = 1;
@@ -187,6 +202,7 @@ let groupWizardDraft = null;
 let groupWizardError = '';
 let groupWizardTimer = null;
 let groupWizardDragId = '';
+let groupWizardPickId = '';
 
 /* ================= SITE / ROUTING HELPERS ================= */
 const HONOUR_DEFAULTS = [
@@ -238,6 +254,7 @@ function ensureSite(target){
     root = state;
   }
   if (!Array.isArray(root.tournaments)) root.tournaments = [];
+  root.tournaments.forEach(t => { if (t && typeof t === 'object') normalizeRegistrations(t); });
   if (!root.site || typeof root.site !== 'object' || Array.isArray(root.site)) root.site = defaultSite();
   const s = root.site;
   if (typeof s.logo !== 'string') s.logo = '';
@@ -432,6 +449,7 @@ function parseHashRoute(raw){
     try { param = decodeURIComponent(parts.slice(1).join('/')); } catch (e){ param = parts.slice(1).join('/'); }
   }
   if (head === 'match') return { tab: 'fixtures', page: 'match', param, sub: null };
+  if (head === 'reg' && param) return { tab: 'reg', page: 'tournament', param, sub: null };
   if (head === 'player') return { tab: 'players', page: 'player', param, sub: null };
   if (head === 'post') return { tab: 'news', page: 'post', param, sub: null };
   if (head === 'news' && param) return { tab: 'news', page: 'post', param, sub: null };
@@ -469,10 +487,15 @@ function applyRoute(parsed){
   route = parsed.tab;
   routePage = parsed.page || null;
   routeParam = parsed.param || '';
+  if (parsed.tab === 'reg') regTournamentId = routeParam;
   if (parsed.sub && FAN_SUBS.indexOf(parsed.sub) !== -1) fanSub = parsed.sub;
   else if (parsed.tab === 'fans' && FAN_SUBS.indexOf(fanSub) === -1) fanSub = 'predict';
 }
-function hashForTab(tabId){ return tabId === 'fans' ? 'predict' : tabId; }
+function hashForTab(tabId){
+  if (tabId === 'fans') return 'predict';
+  if (tabId === 'reg' && regTournamentId) return 'reg/' + encodeURIComponent(regTournamentId);
+  return tabId;
+}
 function rememberRoute(tabId, hash){
   try { localStorage.setItem(LS_TAB_KEY, tabId); } catch (e){ /* private mode */ }
   try {
@@ -485,6 +508,10 @@ function rememberRoute(tabId, hash){
 function navigate(tabId, skipRender){
   route = allowedTab(tabId) ? tabId : 'home';
   routePage = null; routeParam = '';
+  if (route === 'reg' && !findTournament(regTournamentId)){
+    regTournamentId = (view && view.type === 'tournament' && view.id) ||
+      (state.tournaments[0] && state.tournaments[0].id) || '';
+  }
   if (route === 'fans' && FAN_SUBS.indexOf(fanSub) === -1) fanSub = 'predict';
   routeTouched = true;
   rememberRoute(route);
@@ -634,6 +661,7 @@ function teamOptionsGlobal(){
   const out = [];
   state.tournaments.forEach(t => {
     groupsOf(t).forEach(g => g.teams.forEach(team => out.push({ id: team.id, name: team.name, tournamentId: t.id, tournament: t.name, group: g.name })));
+    directTeams(t).forEach(team => out.push({ id: team.id, name: team.name, tournamentId: t.id, tournament: t.name, group: 'Knockout' }));
   });
   return out;
 }
@@ -1244,10 +1272,18 @@ async function initServer(){
 function migrate(data){
   if (!data || !Array.isArray(data.tournaments)) return null;
   data.tournaments.forEach(t => {
-    if (!t.groups && Array.isArray(t.teams)){
+    // Direct-knockout tournaments intentionally keep their teams at the top
+    // level so there is no group table. Legacy single-table tournaments still
+    // migrate into Group A.
+    const direct = !!(t.knockouts && t.knockouts.config && t.knockouts.config.direct);
+    if (!direct && !t.groups && Array.isArray(t.teams)){
       t.groups = [{ id: uid('g'), name: 'Group A', teams: t.teams.slice() }];
       (t.matches || []).forEach(m => m.groupId = t.groups[0].id);
       delete t.teams;
+    }
+    if (direct){
+      t.groups = Array.isArray(t.groups) ? t.groups : [];
+      t.teams = Array.isArray(t.teams) ? t.teams.filter(x => x && x.id && x.name) : [];
     }
     if (t.knockouts && !t.knockouts.rounds && Array.isArray(t.knockouts.qf)){
       t.knockouts = { config: t.knockouts.config || null,
@@ -1256,6 +1292,7 @@ function migrate(data){
     t.groups = t.groups || [];
     t.matches = t.matches || [];
     t.matches.forEach(stripGroupLegs); // group-stage fixtures must stay single-leg
+    normalizeRegistrations(t);
   });
   return data;
 }
@@ -1269,15 +1306,74 @@ function load(){
   }catch(e){ return null; }
 }
 function findTournament(id){ return state.tournaments.find(t => t.id === id); }
-function groupsOf(t){ return t.groups || []; }
+function groupsOf(t){ return t && Array.isArray(t.groups) ? t.groups : []; }
+// Direct knockouts store teams on the tournament itself — no groups, no group fixtures.
+function directTeams(t){ return t && Array.isArray(t.teams) && t.knockouts && t.knockouts.config && t.knockouts.config.direct ? t.teams : []; }
 function findGroup(t, gid){ return groupsOf(t).find(g => g.id === gid) || null; }
-function allTeams(t){ const out = []; groupsOf(t).forEach(g => g.teams.forEach(x => out.push(x))); return out; }
-function teamById(t, id){ for (const g of groupsOf(t)){ const f = g.teams.find(x => x.id === id); if (f) return f; } return null; }
+function allTeams(t){ const out = []; groupsOf(t).forEach(g => g.teams.forEach(x => out.push(x))); directTeams(t).forEach(x => out.push(x)); return out; }
+function teamById(t, id){ for (const g of groupsOf(t)){ const f = g.teams.find(x => x.id === id); if (f) return f; } return directTeams(t).find(x => x.id === id) || null; }
 function groupOfTeam(t, id){ return groupsOf(t).find(g => g.teams.some(x => x.id === id)) || null; }
 function teamName(t, id){ const x = teamById(t, id); return x ? x.name : '???'; }
 function nextGroupLetter(t){
   const n = groupsOf(t).length;
   return n < 26 ? String.fromCharCode(65 + n) : String(n + 1);
+}
+
+/* ---------- public tournament registration ---------- */
+function registrationsOf(t){ return Array.isArray(t && t.registrations) ? t.registrations : []; }
+function normalizeRegistrations(t){
+  if (!t || typeof t !== 'object') return;
+  if (!Array.isArray(t.registrations)) t.registrations = [];
+  t.registrations = t.registrations
+    .filter(r => r && typeof r === 'object' && !Array.isArray(r))
+    .map(r => ({
+      id: typeof r.id === 'string' && r.id ? r.id : uid('rg'),
+      name: txt(r.name, REG_NAME_MAX),
+      username: txt(r.username, REG_USER_MAX),
+      uid: txt(r.uid, REG_UID_MAX),
+      device: txt(r.device, 80),
+      createdAt: num(r.createdAt, 0, 9e15, Date.now())
+    }))
+    .filter(r => r.name && r.username && r.uid)
+    .slice(0, REG_MAX_PER_TOURNAMENT);
+}
+function registrationPlaced(t, reg){
+  if (!t || !reg) return false;
+  const id = String(reg.id || '');
+  const uidKey = String(reg.uid || '').trim().toLowerCase();
+  // UID (and the stored registration link) is the identity — two players can
+  // share a Username, so never treat the visible name as unique.
+  return allTeams(t).some(team =>
+    (id && team.registrationId === id) ||
+    (uidKey && String(team.tag || '').trim().toLowerCase() === uidKey));
+}
+function validateRegistration(input){
+  const name = String((input && input.name) || '').trim();
+  const username = String((input && input.username) || '').trim();
+  const uid = String((input && input.uid) || '').trim();
+  if (name.length < REG_NAME_MIN || name.length > REG_NAME_MAX)
+    return 'Name must be between ' + REG_NAME_MIN + ' and ' + REG_NAME_MAX + ' characters.';
+  if (username.length < REG_USER_MIN || username.length > REG_USER_MAX)
+    return 'Username must be between ' + REG_USER_MIN + ' and ' + REG_USER_MAX + ' characters.';
+  if (uid.length < REG_UID_MIN || uid.length > REG_UID_MAX)
+    return 'UID must be between ' + REG_UID_MIN + ' and ' + REG_UID_MAX + ' characters.';
+  if (/[\u0000-\u001f\u007f]/.test(name + username + uid))
+    return 'Name, Username and UID cannot contain control characters.';
+  // The wizard uses these fields in its line-based team input, so keep its
+  // column (|) and team separators (,) out of the values.
+  if (/[|,]/.test(name + username + uid))
+    return 'Name, Username and UID cannot contain | or , characters.';
+  return null;
+}
+function registrationDuplicate(t, input, ignoreId){
+  // UID is the only identity used to separate players. Usernames may repeat.
+  const uid = String((input && input.uid) || '').trim().toLowerCase();
+  return registrationsOf(t).some(r => r.id !== ignoreId &&
+    String(r.uid || '').trim().toLowerCase() === uid);
+}
+function registrationLine(reg){
+  // Wizard columns: Team name (Username) | (unused) | UID.
+  return [reg.username, '', reg.uid].join(' | ');
 }
 
 /* ================= DATA HELPERS ================= */
@@ -1821,7 +1917,7 @@ function homeHTML(){
         ? `<div class="cards">${state.tournaments.map(cardHTML).join('')}</div>`
         : `<div class="empty-box">No tournaments yet. ${unlocked ? 'Open the League tab to create the first one.' : 'The league admins are still setting things up.'}</div>`}
     </section>
-    ${activity.length ? activityHTML() : ''}
+    ${unlocked && activity.length ? activityHTML() : ''}
   </main>`;
 }
 /* ---------- match report pages ---------- */
@@ -3273,10 +3369,12 @@ function dashboardHTML(){
         </form>
       </div>` : ''}
     </div>
-    ${activity.length ? activityHTML() : ''}
+    ${unlocked && activity.length ? activityHTML() : ''}
     <div class="footer-note">
       ${IS_SERVER
-        ? 'This is the shared website — every save by an admin appears live for everyone, and the 🕓 Recent changes feed shows who changed what.<br>You can export/import backups as extras too.'
+        ? (unlocked
+            ? 'This is the shared website — admin changes appear live for everyone, and the 🕓 Recent changes feed is private to signed-in admins.<br>You can export/import backups as extras too.'
+            : 'This is the shared website — admin changes appear live for everyone.<br>You can export/import backups as extras too.')
         : 'Data is stored locally in this browser (localStorage).<br>Use <b>Export Backup</b> (admin) to save / share a copy — <b>Import Backup</b> loads it back.'}
     </div>
   </main>`;
@@ -3307,12 +3405,162 @@ function cardHTML(t){
   </div>`;
 }
 
+/* ---------- main Reg tab (choose a tournament) + popup ---------- */
+function registrationPageHTML(){
+  const tournaments = state.tournaments.slice()
+    .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+  if (!findTournament(regTournamentId) && tournaments.length) regTournamentId = tournaments[0].id;
+  const t = findTournament(regTournamentId);
+  return `<main class="wrap">
+    <div class="page-head">
+      <h2>📝 Reg</h2>
+      <p class="hint">Pick a tournament and register your team with your Name, in-game Username and UID. Nothing is added until you submit — if you are just exploring, you can ignore this page.</p>
+    </div>
+    ${flashHTML()}
+    ${tournaments.length ? `<div class="reg-tournament-pills">
+      ${tournaments.map(x => `<button type="button" class="group-pill ${t && x.id === t.id ? 'active' : ''}" data-action="reg-select" data-id="${esc(x.id)}">${esc(x.name)} <span class="gcount">${registrationsOf(x).length}</span></button>`).join('')}
+    </div>` : `<div class="empty-box">No tournaments yet. ${unlocked ? 'Create one from the League tab first.' : 'The admins are still setting up the first tournament.'} <button type="button" class="btn small" data-action="site-go" data-val="league">Go to League</button></div>`}
+    ${t ? `${registrationTabHTML(t)}
+      <div class="reg-page-links">
+        <button type="button" class="btn small" data-action="reg-view" data-id="${esc(t.id)}">← View this tournament</button>
+      </div>` : ''}
+  </main>`;
+}
+function registrationTabHTML(t){
+  const regs = registrationsOf(t);
+  const rows = regs.map((r, i) => {
+    const placed = registrationPlaced(t, r);
+    return `<div class="reg-row">
+      <span class="reg-index">${i + 1}</span>
+      <div class="reg-copy">
+        <strong>${esc(r.name)}${placed ? ' <span class="reg-placed">In tournament</span>' : ''}</strong>
+        <small>Username: ${esc(r.username)} · UID: ${esc(r.uid)}</small>
+      </div>
+      ${unlocked ? `<button type="button" class="btn danger small" data-action="registration-delete" data-id="${esc(r.id)}">Remove</button>` : ''}
+    </div>`;
+  }).join('');
+  return `<section class="panel reg-panel">
+    <div class="reg-intro">
+      <div>
+        <div class="section-title">📝 Tournament registration <small>${esc(t.name || '')} · ${regs.length} team${regs.length === 1 ? '' : 's'} signed up</small></div>
+        <p class="hint">Playing? Register your team with your Name, in-game Username and UID. Just exploring? You can ignore this — nothing is added until you register.</p>
+      </div>
+      <button type="button" class="btn primary" data-action="registration-open">＋ Register your team</button>
+    </div>
+    ${regs.length ? `<div class="reg-list">${rows}</div>`
+      : `<div class="empty-box">No teams registered yet. Be the first to sign up.</div>`}
+    ${unlocked ? `<div class="reg-admin">
+      <span class="hint">Admin tools — turn these sign-ups into groups and a knockout bracket with the wizard.</span>
+      <button type="button" class="btn" data-action="wizard-import-registrations">🧩 Add registered teams to wizard</button>
+      ${regs.length ? `<button type="button" class="btn danger small" data-action="registration-clear">Clear all registrations</button>` : ''}
+    </div>` : ''}
+  </section>`;
+}
+function registrationModalHTML(){
+  if (!registrationModalId) return '';
+  const t = findTournament(registrationModalId);
+  if (!t) return '';
+  const d = registrationDraft || { name: '', username: '', uid: '' };
+  return `<div class="modal-backdrop">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="regModalTitle">
+      <div class="modal-head">
+        <div>
+          <h3 id="regModalTitle">Register for ${esc(t.name)}</h3>
+          <p class="hint">Add your Name, Username and UID to join the tournament.</p>
+        </div>
+        <button type="button" class="btn ghost small modal-x" data-action="registration-close" aria-label="Close registration">×</button>
+      </div>
+      ${registrationError ? `<div class="wizard-error">⚠️ ${esc(registrationError)}</div>` : ''}
+      <form class="reg-form" data-form="registration">
+        <label>Name<input id="regName" maxlength="${REG_NAME_MAX}" placeholder="e.g. Lions" autocomplete="off" value="${esc(d.name || '')}"></label>
+        <label>Username<input id="regUsername" maxlength="${REG_USER_MAX}" placeholder="your FC Mobile username" autocomplete="off" value="${esc(d.username || '')}"></label>
+        <label>UID<input id="regUid" maxlength="${REG_UID_MAX}" placeholder="your FC Mobile UID" autocomplete="off" value="${esc(d.uid || '')}"></label>
+        <div class="reg-form-actions">
+          <button type="button" class="btn ghost" data-action="registration-close">Cancel</button>
+          <button type="button" class="btn primary" data-action="registration-submit" ${registrationBusy ? 'disabled' : ''}>${registrationBusy ? 'Registering…' : 'Register team'}</button>
+        </div>
+      </form>
+      <p class="hint reg-footnote">Registration is optional — close this popup if you are only exploring.</p>
+    </div>
+  </div>`;
+}
+function registrationCapture(){
+  const n = document.getElementById('regName');
+  const u = document.getElementById('regUsername');
+  const i = document.getElementById('regUid');
+  if (n && typeof n.value === 'string') registrationDraft.name = n.value;
+  if (u && typeof u.value === 'string') registrationDraft.username = u.value;
+  if (i && typeof i.value === 'string') registrationDraft.uid = i.value;
+}
+function registrationClose(){
+  registrationModalId = '';
+  registrationDraft = { name: '', username: '', uid: '' };
+  registrationError = '';
+  registrationBusy = false;
+}
+async function submitRegistration(t){
+  if (!t || registrationBusy) return;
+  registrationCapture();
+  const err = validateRegistration(registrationDraft);
+  if (err){ registrationError = err; render(); return; }
+  if (registrationDuplicate(t, registrationDraft)){
+    registrationError = 'That UID is already registered for this tournament.';
+    render(); return;
+  }
+  if (registrationsOf(t).length >= REG_MAX_PER_TOURNAMENT){
+    registrationError = 'This tournament is full. Ask an admin to make room.';
+    render(); return;
+  }
+  const entry = {
+    name: String(registrationDraft.name || '').trim(),
+    username: String(registrationDraft.username || '').trim(),
+    uid: String(registrationDraft.uid || '').trim(),
+    device: deviceIdEnsure(),
+    createdAt: Date.now()
+  };
+  registrationError = '';
+  registrationBusy = true;
+  render();
+  if (IS_SERVER){
+    try {
+      const res = await fetch('/api/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(Object.assign({ tournamentId: t.id }, entry))
+      });
+      const d = await res.json();
+      if (!res.ok || !d.ok){
+        registrationBusy = false;
+        registrationError = (d && d.error) || 'That registration did not save. Please try again.';
+        render(); return;
+      }
+    } catch (e){
+      registrationBusy = false;
+      registrationError = 'Could not reach the server. Check your connection and try again.';
+      render(); return;
+    }
+    registrationBusy = false;
+    registrationClose();
+    flash = '✅ ' + entry.name + ' is registered for ' + t.name + '.';
+    await refreshFromServer();
+    return;
+  }
+  t.registrations = registrationsOf(t);
+  t.registrations.push(Object.assign({ id: uid('rg') }, entry));
+  registrationBusy = false;
+  registrationClose();
+  flash = '✅ ' + entry.name + ' is registered for ' + t.name + '.';
+  save();
+  render();
+}
+
 /* ================= TOURNAMENT PAGE ================= */
 function tournamentHTML(t){
   const st = tournamentStatus(t);
   return `<main class="wrap">
     <div class="back-row">
       <button class="btn small" data-action="go-home">← All Tournaments</button>
+      <button type="button" class="btn small" data-action="reg-open" data-id="${esc(t.id)}" title="Open the Reg tab for this tournament">📝 Register</button>
       <span class="tname">${esc(t.name)}</span>
       <span class="status-pill st-${st.key}">${st.label}</span>
     </div>
@@ -3361,7 +3609,9 @@ function tableTabHTML(t){
       <button type="button" class="btn primary small" data-action="wizard-open">${groupWizardOpen ? 'Wizard open' : 'Open wizard'}</button>
     </div>` : ''}
     ${unlocked && groupWizardOpen ? groupWizardHTML(t) : ''}
-    ${groups.length === 0 ? `<div class="empty-box">No groups yet. ${unlocked ? 'Add a group to get started, or use the Group Setup Wizard above.' : 'The admin needs to add groups.'}</div>` : ''}
+    ${groups.length === 0 ? `<div class="empty-box">${t.knockouts && t.knockouts.config && t.knockouts.config.direct
+      ? 'Direct knockout tournament — there is no group table. Open the Knockouts tab for the bracket and results.'
+      : `No groups yet. ${unlocked ? 'Add a group to get started, or use the Group Setup Wizard above.' : 'The admin needs to add groups.'}`}</div>` : ''}
     ${sel ? `
     ${unlocked ? `
     <div class="team-form">
@@ -4179,7 +4429,7 @@ function groupOptions(teamCount, knockoutSize, doubleRound){
 function groupWizardBlank(){
   return { raw: '', teams: [], duplicates: [], knockoutSize: null, doubleRound: false,
            options: [], optionId: '', method: 'random', groups: [], drawing: false,
-           queue: [], conflicts: [], note: '' };
+           queue: [], conflicts: [], note: '', source: 'manual', skipGroups: false };
 }
 function wizardGroupLetter(i){
   let n = Math.max(1, Number(i) + 1), s = '';
@@ -4203,31 +4453,116 @@ function groupWizardCapture(){
   const ta = document.getElementById('wizardTeams');
   if (ta && typeof ta.value === 'string') d.raw = ta.value;
 }
+function wizardTeamKey(team){
+  // UID is the identity when present; the visible name is allowed to repeat.
+  const tag = String((team && team.tag) || '').trim().toLowerCase();
+  if (tag) return tag;
+  return String((team && team.name) || '').trim().toLowerCase();
+}
+function groupWizardSyncRaw(){
+  const d = groupWizardDraft;
+  if (!d) return;
+  d.raw = (d.teams || []).map(team =>
+    d.source === 'registrations'
+      ? [team.name, '', team.tag].join(' | ')
+      : [team.name, team.club, team.tag].join(' | ')
+  ).join('\n');
+}
+/* Direct knockout seeding: marked seeds go in first, everyone else keeps the
+ * order they were entered in. Classic seedOrder avoids all-star first-round ties. */
+function groupWizardDirectPicks(d){
+  const total = Number(d && d.knockoutSize);
+  if (!d || !VALID_N.includes(total) || d.teams.length < total) return [];
+  const ordered = d.teams.filter(t => t.seed).concat(d.teams.filter(t => !t.seed));
+  return seedOrder(total).map(k => ordered[k] || null);
+}
+function groupWizardDirectPairsHTML(d){
+  const picks = groupWizardDirectPicks(d);
+  const total = Number(d && d.knockoutSize);
+  if (!VALID_N.includes(total) || picks.length !== total || picks.some(p => !p)){
+    return '<div class="empty-box compact">Choose a bracket size that uses every team.</div>';
+  }
+  return `<div class="wizard-direct-bracket">
+    <div class="section-title small-title">${esc(makeTitleChain(total))} <small>${total} teams · seeds placed first</small></div>
+    <div class="wizard-direct-pairs">${Array.from({ length: total / 2 }, (_, i) => `
+      <div class="wizard-direct-pair">
+        <b>${esc(roundTitleFor(total))} · Match ${i + 1}</b>
+        <span>${esc(picks[i * 2].name)} <i>vs</i> ${esc(picks[i * 2 + 1].name)}</span>
+      </div>`).join('')}</div>
+  </div>`;
+}
 function groupWizardParse(raw, oldTeams){
   const teams = [], duplicates = [], seen = {}, usedPrev = new Set();
   String(raw || '').split(/\r?\n|,/).forEach(part => {
     const bits = String(part).split('|');
     const name = String(bits[0] || '').trim().slice(0, 40);
     if (!name) return;
-    const key = name.toLowerCase();
-    const prev = (oldTeams || []).find(x => x.name.toLowerCase() === key && !usedPrev.has(x.id));
+    const tag = String(bits[2] || '').trim().slice(0, 30);
+    const key = wizardTeamKey({ name: name, tag: tag });
+    const prev = (oldTeams || []).find(x => !usedPrev.has(x.id) && wizardTeamKey(x) === key) ||
+                 (oldTeams || []).find(x => !usedPrev.has(x.id) && String(x.name || '').toLowerCase() === name.toLowerCase());
     if (prev) usedPrev.add(prev.id);
     const item = {
       id: prev ? prev.id : uid('wt'),
       name: name,
       club: String(bits[1] || (prev && prev.club) || '').trim().slice(0, 30),
-      tag: String(bits[2] || (prev && prev.tag) || '').trim().slice(0, 30),
-      seed: prev ? !!prev.seed : false
+      tag: tag || String((prev && prev.tag) || '').trim().slice(0, 30),
+      seed: prev ? !!prev.seed : false,
+      registrationId: prev ? (prev.registrationId || '') : ''
     };
-    if (seen[key]) duplicates.push(name);
+    if (seen[key]) duplicates.push(tag || name);
     seen[key] = true;
     teams.push(item);
   });
   return { teams: teams, duplicates: Array.from(new Set(duplicates)) };
 }
+/* One-click hand-off from public registrations into the group/knockout draw. */
+function wizardImportRegistrations(t){
+  if (!unlocked || !t) return false;
+  const regs = registrationsOf(t);
+  if (groupWizardTimer){ clearTimeout(groupWizardTimer); groupWizardTimer = null; }
+  // The wizard lives on the tournament's Points Tables tab, so hand off from
+  // the main Reg tab by opening that tournament first.
+  openTournamentState(t);
+  route = 'league'; routeTouched = true; rememberRoute('league');
+  groupWizardOpen = true; groupWizardStep = 1;
+  groupWizardDraft = groupWizardBlank();
+  groupWizardError = ''; groupWizardPickId = '';
+  if (!regs.length){
+    groupWizardError = 'No teams have registered for this tournament yet.';
+    render();
+    return false;
+  }
+  const d = groupWizardDraft;
+  d.source = 'registrations';
+  d.raw = regs.map(registrationLine).join('\n');
+  // Build the draft teams directly from the registrations. Parsing the raw
+  // text back would risk losing the registration link if any field is edited.
+  d.teams = regs.map(reg => ({
+    id: uid('wt'), name: reg.username, club: '', tag: reg.uid,
+    seed: false, registrationId: reg.id
+  }));
+  flash = '📝 Imported ' + regs.length + ' registered team' + (regs.length === 1 ? '' : 's') + ' into the wizard.';
+  const seen = {};
+  d.duplicates = [];
+  d.teams.forEach(team => {
+    const key = wizardTeamKey(team);
+    if (seen[key]) d.duplicates.push(key);
+    seen[key] = true;
+  });
+  groupWizardRefreshOptions();
+  render();
+  return true;
+}
+function defaultKnockoutSize(teamCount){
+  // Group planning comes first now, so pick the largest bracket that fits the
+  // teams automatically. Admins can still change it on the Knockout step.
+  return KO_SIZE_CHOICES.find(size => size <= teamCount) || 2;
+}
 function groupWizardRefreshOptions(){
   const d = groupWizardDraft;
-  if (!d || !d.knockoutSize) return;
+  if (!d) return;
+  if (!d.knockoutSize || d.knockoutSize > d.teams.length) d.knockoutSize = defaultKnockoutSize(d.teams.length);
   d.options = groupOptions(d.teams.length, d.knockoutSize, d.doubleRound);
   if (!d.options.some(o => o.id === d.optionId)) d.optionId = '';
 }
@@ -4361,21 +4696,76 @@ function groupWizardUnassigned(d){
   d.groups.forEach(g => g.teams.forEach(id => used.add(id)));
   return d.teams.filter(t => !used.has(t.id));
 }
+function groupWizardTeamLocation(d, teamId){
+  if (!d) return -1;
+  for (let i = 0; i < d.groups.length; i++){
+    if ((d.groups[i].teams || []).indexOf(teamId) !== -1) return i;
+  }
+  return -1;
+}
 function groupWizardMove(teamId, gi){
   const d = groupWizardDraft;
   const team = wizardTeamById(d, teamId);
-  if (!d || !team) return;
-  d.groups.forEach(g => { g.teams = g.teams.filter(id => id !== teamId); });
-  if (gi != null && gi >= 0 && d.groups[gi]){
-    if (d.groups[gi].teams.length >= d.groups[gi].capacity){
-      groupWizardError = `${d.groups[gi].name} is full (${d.groups[gi].capacity} teams). Move another team out first.`;
-      render(); return;
-    }
-    d.groups[gi].teams.push(teamId);
+  if (!d || !team) return false;
+  const targetIndex = gi == null || gi === '' ? -1 : Number(gi);
+  if (targetIndex >= 0 && !d.groups[targetIndex]) return false;
+  const target = targetIndex >= 0 ? d.groups[targetIndex] : null;
+  const currentIndex = groupWizardTeamLocation(d, teamId);
+  if (target && currentIndex === targetIndex){
+    groupWizardPickId = '';
+    groupWizardError = '';
+    groupWizardCheckConflicts();
+    render();
+    return true;
   }
+  if (target && target.teams.length >= target.capacity){
+    groupWizardError = `${target.name} is full (${target.capacity} teams). Move another team out first.`;
+    render();
+    return false;
+  }
+  d.groups.forEach(g => { g.teams = g.teams.filter(id => id !== teamId); });
+  if (target) target.teams.push(teamId);
+  if (groupWizardPickId === teamId) groupWizardPickId = '';
   groupWizardError = '';
   groupWizardCheckConflicts();
   render();
+  return true;
+}
+function groupWizardPickHTML(d){
+  const picked = wizardTeamById(d, groupWizardPickId);
+  return `<div class="wizard-picker">
+    <div class="wizard-picker-head">
+      <div>
+        <strong>Click a team, then choose its group</strong>
+        <small>No dragging needed. You can still drag chips or use the move menu.</small>
+      </div>
+      ${picked
+        ? `<span class="wizard-picked">✓ ${esc(picked.name)} selected</span>`
+        : '<span class="wizard-picked empty">No team selected</span>'}
+    </div>
+    <div class="wizard-pick-list">
+      ${d.teams.map(team => {
+        const at = groupWizardTeamLocation(d, team.id);
+        const where = at === -1 ? 'Waiting' : d.groups[at].name;
+        const selected = picked && picked.id === team.id;
+        return `<button type="button" class="wizard-pick-chip ${selected ? 'selected' : ''}" data-action="wizard-pick-team" data-id="${esc(team.id)}" aria-pressed="${selected ? 'true' : 'false'}">
+          <span>${esc(team.name)}</span><small>${esc(where)}</small>
+        </button>`;
+      }).join('')}
+    </div>
+    ${picked ? `<div class="wizard-targets" aria-label="Add ${esc(picked.name)} to a group">
+      ${d.groups.map((g, gi) => {
+        const full = g.teams.length >= g.capacity;
+        const here = groupWizardTeamLocation(d, picked.id) === gi;
+        return `<button type="button" class="wizard-target ${here ? 'current' : ''}" data-action="wizard-place-team" data-id="${gi}" ${full && !here ? 'disabled' : ''}>
+          <span>${here ? 'In ' + esc(g.name) : 'Add to ' + esc(g.name)}</span><small>${g.teams.length}/${g.capacity}</small>
+        </button>`;
+      }).join('')}
+      <button type="button" class="wizard-target waiting-target" data-action="wizard-place-team" data-id="-1">
+        <span>Move to waiting</span><small>Not placed</small>
+      </button>
+    </div>` : '<p class="wizard-pick-hint">Pick a team above to show the add buttons.</p>'}
+  </div>`;
 }
 function groupWizardGroupCardsHTML(d){
   return `<div class="wizard-groups">
@@ -4385,7 +4775,8 @@ function groupWizardGroupCardsHTML(d){
         ${g.teams.map(id => {
           const team = wizardTeamById(d, id);
           if (!team) return '';
-          return `<div class="wizard-team-chip" draggable="true" data-wizard-drag="${esc(team.id)}" title="${esc([team.club, team.tag].filter(Boolean).join(' · ') || 'Drag to move')}">
+          const detail = team.registrationId ? '' : [team.club, team.tag].filter(Boolean).join(' · ');
+          return `<div class="wizard-team-chip" draggable="true" data-wizard-drag="${esc(team.id)}" title="${esc(detail || 'Drag to move')}">
             <span>${esc(team.name)}</span>${team.seed ? '<i title="Seed">★</i>' : ''}
             <select data-wizard-move="${esc(team.id)}" aria-label="Move ${esc(team.name)}">
               ${d.groups.map((o, oi) => `<option value="${oi}" ${oi === gi ? 'selected' : ''}>${esc(o.name)}</option>`).join('')}
@@ -4420,87 +4811,116 @@ function groupWizardOptionsHTML(d){
 function groupWizardHTML(t){
   if (!groupWizardOpen || !unlocked) return '';
   const d = groupWizardDraft || (groupWizardDraft = groupWizardBlank());
-  const steps = ['Teams', 'Knockout', 'Format', 'Groups', 'Draw', 'Preview'];
-  const step = Math.max(1, Math.min(6, groupWizardStep));
+  const steps = ['Teams', 'Group stage', 'Place teams', 'Knockout', 'Preview'];
+  const step = Math.max(1, Math.min(5, groupWizardStep));
   const current = groupWizardSelected(d);
-  const canSize = groupWizardDraft && groupWizardDraft.teams.length >= 2;
+  const skip = !!d.skipGroups;
   const hasExisting = groupsOf(t).some(g => g.teams.length > 0) || (t.matches || []).length > 0 || !!t.knockouts;
   return `<section class="panel group-wizard">
     <div class="wizard-head">
       <div><div class="section-title">🧩 Group Setup Wizard <small>admin only · nothing is saved until Lock</small></div>
-      <p class="hint">Paste teams, choose a knockout size, pick a group plan, then place the teams.</p></div>
+      <p class="hint">Paste teams, then plan the group stage or skip straight to a direct knockout.</p></div>
       <button type="button" class="btn ghost small" data-action="wizard-close">Close</button>
     </div>
-    <div class="wizard-steps">${steps.map((s, i) => `<span class="${step === i + 1 ? 'active' : step > i + 1 ? 'done' : ''}"><b>${i + 1}</b>${esc(s)}</span>`).join('')}</div>
+    <div class="wizard-steps">${steps.map((s, i) => {
+      const n = i + 1;
+      const skipped = !!d.skipGroups && (n === 2 || n === 3);
+      const cls = skipped ? 'skipped' : step === n ? 'active' : step > n ? 'done' : '';
+      return `<span class="${cls}"><b>${skipped ? '—' : n}</b>${esc(s)}${skipped ? '<small>skipped</small>' : ''}</span>`;
+    }).join('')}</div>
     ${groupWizardError ? `<div class="wizard-error">⚠️ ${esc(groupWizardError)}</div>` : ''}
-    ${hasExisting ? `<div class="wizard-warn">⚠️ Locking will replace the current groups, group fixtures and knockout bracket for this tournament. Existing results are not kept.</div>` : ''}
+    ${hasExisting ? `<div class="wizard-warn">⚠️ Locking will replace ${d.skipGroups ? 'the current teams and knockout bracket' : 'the current groups, group fixtures and knockout bracket'} for this tournament. Existing results are not kept.</div>` : ''}
 
     ${step === 1 ? `<div class="wizard-body">
-      <label class="wizard-label">Team names <small>one per line or comma-separated. Optional: <code>Name | Club | Tag</code></small>
-        <textarea id="wizardTeams" rows="8" placeholder="Lions&#10;Sharks&#10;Eagles | Club Ceylon | South">${esc(d.raw)}</textarea>
+      ${registrationsOf(t).length ? `<div class="wizard-import">
+        <span class="hint">${registrationsOf(t).length} team(s) registered for ${esc(t.name)}. Import them to split them into groups automatically.</span>
+        <button type="button" class="btn" data-action="wizard-import-registrations">📝 ${d.source === 'registrations' ? 'Refresh registered teams' : 'Import registered teams'}</button>
+      </div>` : ''}
+      ${d.source === 'registrations' ? `<p class="hint wizard-source-note">Imported from tournament registrations — the UID is used only to keep duplicate players apart, and the Username is shown as the team name. Mark seeds below, then choose the group stage or skip straight to a direct knockout.</p>` : ''}
+      <label class="wizard-label">Team names <small>${d.source === 'registrations'
+        ? 'one per line or comma-separated. Format: <code>Username |  | UID</code> — the UID separates repeats.'
+        : 'one per line or comma-separated. Optional: <code>Name | Club | Tag</code>'}</small>
+        <textarea id="wizardTeams" rows="8" placeholder="${d.source === 'registrations' ? 'PlayerOne |  | UID-1001&#10;PlayerTwo |  | UID-1002' : 'Lions&#10;Sharks&#10;Eagles | Club Ceylon | South'}">${esc(d.raw)}</textarea>
       </label>
       <div class="wizard-actions"><button type="button" class="btn primary" data-action="wizard-parse">Check names</button>
-      <button type="button" class="btn" data-action="wizard-next">Next: knockout size</button></div>
+      <button type="button" class="btn" data-action="wizard-next">Next: group stage</button>
+      <button type="button" class="btn ghost" data-action="wizard-skip">⚡ Skip groups → knockouts</button></div>
       ${d.teams.length ? `<div class="wizard-team-editor">
-        <div class="section-title small-title">${d.teams.length} team${d.teams.length === 1 ? '' : 's'} ready <small>mark seeds or add club/tag to avoid clashes</small></div>
-        ${d.teams.map(team => `<div class="wizard-team-row ${d.duplicates.some(x => x.toLowerCase() === team.name.toLowerCase()) ? 'duplicate' : ''}">
-          <strong>${esc(team.name)}</strong>
-          ${d.duplicates.some(x => x.toLowerCase() === team.name.toLowerCase()) ? '<span class="verdict-tag danger">Duplicate</span>' : ''}
-          <input data-wizard-club="${esc(team.id)}" value="${esc(team.club)}" maxlength="30" placeholder="Club (optional)" aria-label="Club for ${esc(team.name)}">
-          <input data-wizard-tag="${esc(team.id)}" value="${esc(team.tag)}" maxlength="30" placeholder="Tag (optional)" aria-label="Tag for ${esc(team.name)}">
-          <label class="wizard-seed"><input type="checkbox" data-wizard-seed="${esc(team.id)}" ${team.seed ? 'checked' : ''}> Seed</label>
-        </div>`).join('')}
+        <div class="section-title small-title">${d.teams.length} team${d.teams.length === 1 ? '' : 's'} ready <small>${d.source === 'registrations' ? 'mark seeds or edit Username / UID' : 'mark seeds or add club/tag to avoid clashes'}</small></div>
+        ${d.teams.map(team => {
+          const imported = d.source === 'registrations';
+          const duplicate = d.duplicates.some(x => x.toLowerCase() === wizardTeamKey(team));
+          return `<div class="wizard-team-row ${duplicate ? 'duplicate' : ''}">
+            ${imported
+              ? `<input data-wizard-name="${esc(team.id)}" value="${esc(team.name)}" maxlength="30" placeholder="Username" aria-label="Username for ${esc(team.name)}">`
+              : `<strong>${esc(team.name)}</strong>`}
+            ${duplicate ? '<span class="verdict-tag danger">Duplicate</span>' : ''}
+            ${imported ? '' : `<input data-wizard-club="${esc(team.id)}" value="${esc(team.club)}" maxlength="30" placeholder="Club (optional)" aria-label="Club for ${esc(team.name)}">`}
+            <input data-wizard-tag="${esc(team.id)}" value="${esc(team.tag)}" maxlength="30" placeholder="${imported ? 'UID' : 'Tag (optional)'}" aria-label="${imported ? 'UID' : 'Tag'} for ${esc(team.name)}">
+            <label class="wizard-seed"><input type="checkbox" data-wizard-seed="${esc(team.id)}" ${team.seed ? 'checked' : ''}> Seed</label>
+          </div>`;
+        }).join('')}
       </div>` : ''}
-      ${d.duplicates.length ? `<div class="wizard-error">⚠️ Duplicate team names: ${esc(d.duplicates.join(', '))}. Remove the repeats before continuing.</div>` : ''}
+      ${d.duplicates.length ? `<div class="wizard-error">⚠️ Duplicate UIDs: ${esc(d.duplicates.join(', '))}. Each player needs a unique UID.</div>` : ''}
     </div>` : ''}
 
     ${step === 2 ? `<div class="wizard-body">
-      <div class="section-title small-title">Knockout size <small>only sizes that fit all ${d.teams.length} teams are enabled</small></div>
-      <div class="wizard-size-grid">${KO_SIZE_CHOICES.map(n => `<button type="button" class="wizard-size ${d.knockoutSize === n ? 'selected' : ''}" data-action="wizard-size" data-id="${n}" ${n > d.teams.length ? 'disabled' : ''}>${n}<small>${n <= d.teams.length ? 'teams' : 'not enough teams'}</small></button>`).join('')}</div>
-      ${!d.teams.length ? `<div class="empty-box compact">Go back and add at least 2 team names.</div>` : ''}
-      <div class="wizard-actions"><button type="button" class="btn ghost" data-action="wizard-back">Back</button><button type="button" class="btn primary" data-action="wizard-next">Next: group format</button></div>
-    </div>` : ''}
-
-    ${step === 3 ? `<div class="wizard-body">
       <div class="section-title small-title">Group round-robin <small>choose how many times each pair meets</small></div>
       <div class="wizard-choice-grid">
         <button type="button" class="wizard-choice ${d.doubleRound ? '' : 'selected'}" data-action="wizard-rr" data-id="single"><strong>Single round-robin</strong><span>Every pair plays once. Fewer games, faster group stage.</span></button>
         <button type="button" class="wizard-choice ${d.doubleRound ? 'selected' : ''}" data-action="wizard-rr" data-id="double"><strong>Double round-robin</strong><span>Home and away. More games and a fairer table.</span></button>
       </div>
-      <div class="wizard-actions"><button type="button" class="btn ghost" data-action="wizard-back">Back</button><button type="button" class="btn primary" data-action="wizard-next">Show group plans</button></div>
-    </div>` : ''}
-
-    ${step === 4 ? `<div class="wizard-body">
-      <div class="section-title small-title">Group break options <small>best first · ${d.knockoutSize}-team knockout · ${d.doubleRound ? 'double' : 'single'} round-robin</small></div>
+      <div class="section-title small-title" style="margin-top:18px">Group break options <small>best first · ${d.knockoutSize}-team knockout · ${d.doubleRound ? 'double' : 'single'} round-robin</small></div>
       ${groupWizardOptionsHTML(d)}
       <div class="wizard-actions"><button type="button" class="btn ghost" data-action="wizard-back">Back</button><button type="button" class="btn primary" data-action="wizard-next" ${current ? '' : 'disabled'}>Next: place teams</button></div>
-      ${!current ? '<p class="hint">Pick one card to continue.</p>' : ''}
+      ${!current ? '<p class="hint">Pick one group-break card to continue.</p>' : ''}
     </div>` : ''}
 
-    ${step === 5 ? `<div class="wizard-body">
+    ${step === 3 ? `<div class="wizard-body">
       <div class="section-title small-title">Place the teams <small>${current ? esc(current.title) : 'choose a plan first'}</small></div>
       <div class="wizard-choice-grid three">
         <button type="button" class="wizard-choice ${d.method === 'random' ? 'selected' : ''}" data-action="wizard-method" data-id="random"><strong>🎲 Random draw</strong><span>One team at a time, with club/tag clashes avoided.</span></button>
         <button type="button" class="wizard-choice ${d.method === 'seeded' ? 'selected' : ''}" data-action="wizard-method" data-id="seeded"><strong>★ Seeded draw</strong><span>One seed per group, then the rest randomly.</span></button>
-        <button type="button" class="wizard-choice ${d.method === 'manual' ? 'selected' : ''}" data-action="wizard-method" data-id="manual"><strong>✋ Manual</strong><span>Drag teams between groups.</span></button>
+        <button type="button" class="wizard-choice ${d.method === 'manual' ? 'selected' : ''}" data-action="wizard-method" data-id="manual"><strong>✋ Manual</strong><span>Pick a team, then choose a group. Dragging still works too.</span></button>
       </div>
       ${d.method === 'seeded' ? `<p class="hint">${d.teams.filter(t => t.seed).length} seed${d.teams.filter(t => t.seed).length === 1 ? '' : 's'} marked. You need at most ${current ? current.groupCount : 'the number of'} seed(s) — one per group.</p>` : ''}
       <div class="wizard-actions"><button type="button" class="btn ghost" data-action="wizard-back">Back</button>
         ${d.method === 'manual' ? `<button type="button" class="btn" data-action="wizard-manual-start">Start manual placement</button>` : `<button type="button" class="btn primary" data-action="wizard-draw" ${current && !d.drawing ? '' : 'disabled'}>${d.drawing ? 'Drawing…' : 'Start ' + (d.method === 'seeded' ? 'seeded' : 'random') + ' draw'}</button>`}
-        <button type="button" class="btn primary" data-action="wizard-next" ${current && !d.drawing ? '' : 'disabled'}>Next: preview</button>
+        <button type="button" class="btn primary" data-action="wizard-next" ${current && !d.drawing ? '' : 'disabled'}>Next: knockout size</button>
       </div>
-      ${d.groups.length ? groupWizardGroupCardsHTML(d) : (d.method === 'manual' ? `<div class="empty-box compact">Choose “Start manual placement” to open the group columns.</div>` : '')}
+      ${d.groups.length
+        ? (d.method === 'manual' ? groupWizardPickHTML(d) : '') + groupWizardGroupCardsHTML(d)
+        : (d.method === 'manual' ? `<div class="empty-box compact">Choose “Start manual placement” to open the group columns.</div>` : '')}
       ${d.conflicts.length ? `<div class="wizard-warn">⚠️ Some clubs/tags share a group: ${esc(d.conflicts.slice(0, 6).join('; '))}. You can redraw or move teams manually.</div>` : ''}
     </div>` : ''}
 
-    ${step === 6 ? `<div class="wizard-body">
-      <div class="section-title small-title">Preview &amp; lock <small>${current ? esc(current.title) : ''} · ${d.groupCount || (current && current.groupCount) || 0} groups</small></div>
-      ${!d.groups.length ? `<div class="empty-box compact">Place the teams first.</div>` : groupWizardGroupCardsHTML(d)}
-      ${d.conflicts.length ? `<div class="wizard-warn">⚠️ Club/tag clashes: ${esc(d.conflicts.slice(0, 6).join('; '))}. You can still lock if you accept them.</div>` : ''}
+    ${step === 4 ? `<div class="wizard-body">
+      <div class="section-title small-title">Knockout size <small>${skip ? 'a direct bracket uses every team' : 'only sizes that fit all ' + d.teams.length + ' teams are enabled'}</small></div>
+      <p class="hint">${skip
+        ? 'Direct knockout: no groups and no group fixtures. Mark seeds on the Teams step to place them in the bracket; the rest follow in entry order.'
+        : 'A bracket size was chosen automatically while you planned the groups. Change it here if you want a different knockout — the group plans and draw will be reset.'}</p>
+      <div class="wizard-size-grid">${KO_SIZE_CHOICES.map(n => {
+        const disabled = skip ? n !== d.teams.length : n > d.teams.length;
+        const label = skip ? (n === d.teams.length ? 'all teams' : 'needs all teams') : (n <= d.teams.length ? 'teams' : 'not enough teams');
+        return `<button type="button" class="wizard-size ${d.knockoutSize === n ? 'selected' : ''}" data-action="wizard-size" data-id="${n}" ${disabled ? 'disabled' : ''}>${n}<small>${label}</small></button>`;
+      }).join('')}</div>
+      ${!d.teams.length ? `<div class="empty-box compact">Go back and add at least 2 team names.</div>` : ''}
+      ${skip && !VALID_N.includes(d.teams.length) ? `<div class="wizard-error">⚠️ Direct knockouts need 2, 4, 8, 16, 32 or 64 teams. Add or remove teams, or use the group stage.</div>` : ''}
+      <div class="wizard-actions">
+        <button type="button" class="btn ghost" data-action="wizard-back">${skip ? 'Back to teams' : 'Back'}</button>
+        ${skip ? `<button type="button" class="btn" data-action="wizard-use-groups">Use group stage instead</button>` : ''}
+        <button type="button" class="btn primary" data-action="wizard-next">Next: preview</button>
+      </div>
+    </div>` : ''}
+
+    ${step === 5 ? `<div class="wizard-body">
+      <div class="section-title small-title">Preview &amp; lock <small>${skip ? 'direct knockout · no group fixtures' : (current ? esc(current.title) : '') + ' · ' + (d.groupCount || (current && current.groupCount) || 0) + ' groups'}</small></div>
+      ${skip ? groupWizardDirectPairsHTML(d) : (!d.groups.length ? `<div class="empty-box compact">Place the teams first.</div>` : groupWizardGroupCardsHTML(d))}
+      ${!skip && d.conflicts.length ? `<div class="wizard-warn">⚠️ Club/tag clashes: ${esc(d.conflicts.slice(0, 6).join('; '))}. You can still lock if you accept them.</div>` : ''}
       <div class="wizard-actions">
         <button type="button" class="btn ghost" data-action="wizard-back">Back</button>
-        <button type="button" class="btn" data-action="wizard-redraw" ${d.drawing ? 'disabled' : ''}>↺ Redraw</button>
-        <button type="button" class="btn primary" data-action="wizard-lock" ${d.drawing ? 'disabled' : ''}>🔒 Lock groups &amp; create fixtures</button>
+        ${skip ? '' : `<button type="button" class="btn" data-action="wizard-redraw" ${d.drawing ? 'disabled' : ''}>↺ Redraw</button>`}
+        <button type="button" class="btn primary" data-action="wizard-lock" ${d.drawing ? 'disabled' : ''}>${skip ? '🔒 Lock knockout &amp; create bracket' : '🔒 Lock groups &amp; create fixtures'}</button>
       </div>
     </div>` : ''}
   </section>`;
@@ -4607,9 +5027,59 @@ function seedPendingBracket(t){
   autoAdvance(t);
   return true;
 }
+/* Admin chose "Skip groups": create teams + a filled direct bracket instead of
+ * groups, fixtures and a pending bracket. Seeds get the protected bracket slots. */
+function groupWizardLockDirect(t, d){
+  const total = Number(d.knockoutSize);
+  if (!VALID_N.includes(total) || total !== d.teams.length){
+    groupWizardError = 'Direct knockouts need all teams in a 2, 4, 8, 16, 32 or 64-team bracket.'; render(); return false;
+  }
+  if (d.drawing){ groupWizardError = 'Wait for the draw to finish, then lock.'; render(); return false; }
+  const drafts = groupWizardDirectPicks(d);
+  if (drafts.length !== total || drafts.some(p => !p)){
+    groupWizardError = 'Every bracket slot needs a team. Go back and check the team list.'; render(); return false;
+  }
+  const existing = allTeams(t).length > 0 || (t.matches || []).length > 0 || !!t.knockouts;
+  if (existing && typeof confirm === 'function' &&
+      !confirm('Replace the current teams, results and knockout bracket? Existing results will be removed. This cannot be undone.')){
+    return false;
+  }
+  const idMap = {};
+  const newTeams = d.teams.map(old => {
+    const id = uid('tm');
+    idMap[old.id] = id;
+    // Imported teams show only the Username; UID stays as hidden identity.
+    const note = old.registrationId ? '' : [old.club, old.tag].filter(Boolean).join(' · ');
+    return { id: id, name: old.name, note: note, club: old.club || '', tag: old.tag || '', registrationId: old.registrationId || '' };
+  });
+  const rounds = makeRounds(total);
+  for (let i = 0; i < total / 2; i++){
+    rounds[0][i].homeId = idMap[drafts[i * 2].id];
+    rounds[0][i].awayId = idMap[drafts[i * 2 + 1].id];
+  }
+  t.groups = [];
+  t.teams = newTeams;
+  t.matches = [];
+  t.knockouts = {
+    config: { counts: {}, wildcards: 0, roundModes: defaultRoundModes(total),
+              rules: Object.assign({}, KO_DEFAULT_RULES), pending: false, direct: true },
+    rounds: rounds
+  };
+  autoAdvance(t);
+  view = { type: 'tournament', id: t.id, groupId: null, matchGroupId: null,
+           matchFilter: null, pickOverrides: {}, qgValues: {}, wildcards: 0 };
+  tab = 'knockouts';
+  groupWizardOpen = false; groupWizardDraft = null; groupWizardError = ''; groupWizardPickId = '';
+  if (groupWizardTimer){ clearTimeout(groupWizardTimer); groupWizardTimer = null; }
+  flash = '⚡ Direct knockout created — ' + total + ' teams, no group fixtures. Record the results!';
+  save('Created a direct knockout bracket with the Group Setup Wizard (' + total + ' teams)');
+  render();
+  return true;
+}
 function groupWizardLock(t){
   const d = groupWizardDraft;
   if (!d || !t) return false;
+  if (d.skipGroups) return groupWizardLockDirect(t, d);
   const opt = groupWizardSelected(d);
   if (!opt){ groupWizardError = 'Pick a group-break card first.'; render(); return false; }
   if (d.drawing){ groupWizardError = 'Wait for the draw to finish, then lock.'; render(); return false; }
@@ -4632,13 +5102,17 @@ function groupWizardLock(t){
     name: 'Group ' + wizardGroupLetter(gi),
     teams: g.teams.map(id => {
       const old = wizardTeamById(d, id);
-      return { id: uid('tm'), name: old ? old.name : 'Team', note: old ? [old.club, old.tag].filter(Boolean).join(' · ') : '', club: old ? old.club : '', tag: old ? old.tag : '' };
+      // Imported teams display only the Username (team.name); the UID stays as
+      // the hidden identity in tag and keeps linked registrations separate.
+      const note = old && !old.registrationId ? [old.club, old.tag].filter(Boolean).join(' · ') : '';
+      return { id: uid('tm'), name: old ? old.name : 'Team', note: note, club: old ? old.club : '', tag: old ? old.tag : '', registrationId: old ? (old.registrationId || '') : '' };
     })
   }));
   // Draft teams don't carry new IDs, so map by original id -> new id.
   const idMap = {};
   d.groups.forEach((g, gi) => g.teams.forEach((oldId, ti) => { idMap[oldId] = newGroups[gi].teams[ti].id; }));
   t.groups = newGroups;
+  delete t.teams; // switching a direct-knockout tournament back to groups
   t.matches = [];
   newGroups.forEach((g, gi) => {
     const ids = g.teams.map(x => x.id);
@@ -4665,7 +5139,7 @@ function groupWizardLock(t){
   view = { type:'tournament', id:t.id, groupId:newGroups[0].id, matchGroupId:newGroups[0].id,
            matchFilter:null, pickOverrides:{}, qgValues:{}, wildcards:0 };
   tab = 'table';
-  groupWizardOpen = false; groupWizardDraft = null; groupWizardError = '';
+  groupWizardOpen = false; groupWizardDraft = null; groupWizardError = ''; groupWizardPickId = '';
   if (groupWizardTimer){ clearTimeout(groupWizardTimer); groupWizardTimer = null; }
   flash = '🧩 Groups locked — ' + opt.groupCount + ' groups, ' + t.matches.length + ' group fixtures and an empty ' + total + '-team knockout bracket created.';
   save('Created groups with the Group Setup Wizard (' + opt.title + ', ' + total + '-team knockout, empty bracket)' + conflict);
@@ -5088,6 +5562,7 @@ function render(){
   const r = currentRoute();
   let main;
   if (r === 'home') main = homeHTML();
+  else if (r === 'reg') main = registrationPageHTML();
   else if (r === 'fixtures') main = routePage === 'match' ? matchReportHTML(routeParam) : fixturesHTML();
   else if (r === 'news') main = routePage === 'post' ? newsPostHTML(routeParam) : newsHTML();
   else if (r === 'fans') main = fanZoneHTML();
@@ -5096,7 +5571,7 @@ function render(){
   else if (r === 'hall') main = hallHTML();
   else if (r === 'about') main = aboutHTML();
   else main = view.type === 'tournament' ? tournamentHTML(findTournament(view.id)) : dashboardHTML();
-  app.innerHTML = headerHTML() + announcementStripHTML() + main;
+  app.innerHTML = headerHTML() + announcementStripHTML() + main + registrationModalHTML();
   afterRender();
 }
 function afterRender(){
@@ -5478,6 +5953,7 @@ async function changeOwnPassword(current, next, confirmNext){
   render();
 }
 function activityHTML(){
+  if (!unlocked) return ''; // the change feed is private to signed-in admins
   const rows = activity.slice(0, 25).map(a => `
     <div class="act-row">
       <span class="act-user">${esc(a.user || 'Admin')}</span>
@@ -5486,12 +5962,16 @@ function activityHTML(){
     </div>`).join('');
   return `<div class="panel act-panel">
     <h3>🕓 Recent changes</h3>
-    <p class="hint">Live feed — every save made by any admin, for everyone to see.</p>
+    <p class="hint">Admin-only feed — every save made by any admin, visible only while you are signed in.</p>
     <div class="act-list">${rows}</div>
   </div>`;
 }
 function handle(action, elId, el){
-  const t = view.type === 'tournament' ? findTournament(view.id) : null;
+  // Registration actions work from the main Reg tab, and also from the old
+  // tournament view (e.g. the wizard hand-off) for backwards compatibility.
+  const onRegPage = currentRoute() === 'reg';
+  const t = onRegPage ? findTournament(regTournamentId || routeParam)
+                      : (view.type === 'tournament' ? findTournament(view.id) : null);
   flash = '';
   let logMsg = '';
   switch(action){
@@ -6223,7 +6703,7 @@ function handle(action, elId, el){
       state.tournaments.push({
         id: uid('t'), name, createdAt: Date.now(),
         groups: [{ id: uid('g'), name: 'Group A', teams: [] }],
-        matches: [], knockouts: null
+        matches: [], knockouts: null, registrations: []
       });
       flash = '🏟️ Tournament created! Add teams to Group A, then add more groups.';
       logMsg = 'Created tournament "' + name.trim() + '"';
@@ -6260,14 +6740,62 @@ function handle(action, elId, el){
         view.matchGroupId = groupsOf(t).length ? groupsOf(t)[0].id : null;
       }
       break;
+    case 'reg-select':
+      if (!findTournament(elId)) return;
+      regTournamentId = elId; routeParam = elId;
+      rememberRoute('reg', 'reg/' + encodeURIComponent(elId));
+      render(); return;
+    case 'reg-open': {
+      const rt = findTournament(elId); if (!rt) return;
+      regTournamentId = rt.id;
+      navigateHash('#reg/' + encodeURIComponent(rt.id)); return;
+    }
+    case 'reg-view': {
+      const rt = findTournament(elId || regTournamentId); if (!rt) return;
+      openTournamentState(rt);
+      route = 'league'; routeTouched = true; rememberRoute('league');
+      render(); return;
+    }
+    case 'registration-open': {
+      if (!t) return;
+      registrationModalId = t.id;
+      registrationDraft = { name: '', username: '', uid: '' };
+      registrationError = ''; registrationBusy = false;
+      render(); return;
+    }
+    case 'registration-close':
+      registrationClose(); render(); return;
+    case 'registration-submit':
+      if (!t) return;
+      submitRegistration(t); return;
+    case 'registration-delete': {
+      if (!unlocked || !t) return;
+      const before = registrationsOf(t).length;
+      t.registrations = registrationsOf(t).filter(r => r.id !== elId);
+      if (t.registrations.length === before) return;
+      flash = '🗑️ Registration removed.';
+      logMsg = 'Admin removed a tournament registration';
+      break;
+    }
+    case 'registration-clear': {
+      if (!unlocked || !t) return;
+      if (!registrationsOf(t).length) return;
+      if (typeof confirm === 'function' && !confirm('Remove every registration for ' + t.name + '? This cannot be undone.')) return;
+      t.registrations = [];
+      flash = '🗑️ All registrations cleared.';
+      logMsg = 'Admin cleared tournament registrations';
+      break;
+    }
+    case 'wizard-import-registrations':
+      wizardImportRegistrations(t); return;
     case 'wizard-open': {
       if (!unlocked || !t) break;
-      groupWizardOpen = true; groupWizardStep = 1; groupWizardDraft = groupWizardBlank(); groupWizardError = '';
+      groupWizardOpen = true; groupWizardStep = 1; groupWizardDraft = groupWizardBlank(); groupWizardError = ''; groupWizardPickId = '';
       break;
     }
     case 'wizard-close': {
       if (groupWizardTimer){ clearTimeout(groupWizardTimer); groupWizardTimer = null; }
-      groupWizardOpen = false; groupWizardDraft = null; groupWizardError = '';
+      groupWizardOpen = false; groupWizardDraft = null; groupWizardError = ''; groupWizardPickId = '';
       break;
     }
     case 'wizard-parse': {
@@ -6278,14 +6806,42 @@ function handle(action, elId, el){
       d.teams = parsed.teams; d.duplicates = parsed.duplicates;
       groupWizardRefreshOptions();
       groupWizardError = parsed.duplicates.length
-        ? 'Duplicate team names found: ' + parsed.duplicates.join(', ') + '. Remove the repeats before continuing.'
+        ? 'Duplicate UIDs found: ' + parsed.duplicates.join(', ') + '. Each player needs a unique UID.'
         : (d.teams.length < 2 ? 'Add at least 2 teams to build groups.' : '');
       flash = d.teams.length ? '✅ ' + d.teams.length + ' team' + (d.teams.length === 1 ? '' : 's') + ' found.' : '';
       break;
     }
     case 'wizard-back': {
       groupWizardError = '';
-      groupWizardStep = Math.max(1, groupWizardStep - 1);
+      const d = groupWizardDraft;
+      if (d && d.skipGroups && groupWizardStep === 4) groupWizardStep = 1;
+      else groupWizardStep = Math.max(1, groupWizardStep - 1);
+      break;
+    }
+    case 'wizard-skip': {
+      const d = groupWizardDraft; if (!d) break;
+      groupWizardCapture();
+      const parsed = groupWizardParse(d.raw, d.teams);
+      d.teams = parsed.teams; d.duplicates = parsed.duplicates;
+      if (d.duplicates.length){ groupWizardError = 'Remove duplicate UIDs first: ' + d.duplicates.join(', ') + '.'; break; }
+      if (d.teams.length < 2){ groupWizardError = 'Add at least 2 teams before skipping the group stage.'; break; }
+      if (!VALID_N.includes(d.teams.length)){
+        groupWizardError = 'Direct knockouts need 2, 4, 8, 16, 32 or 64 teams. Add or remove teams, or use the group stage.';
+        break;
+      }
+      d.skipGroups = true; d.knockoutSize = d.teams.length;
+      d.optionId = ''; d.groups = []; d.conflicts = [];
+      d.drawing = false; d.queue = []; groupWizardPickId = '';
+      if (groupWizardTimer){ clearTimeout(groupWizardTimer); groupWizardTimer = null; }
+      groupWizardRefreshOptions();
+      groupWizardStep = 4; groupWizardError = '';
+      flash = '⚡ Direct knockout selected — the group stages are skipped.';
+      break;
+    }
+    case 'wizard-use-groups': {
+      const d = groupWizardDraft; if (!d) break;
+      d.skipGroups = false; d.knockoutSize = defaultKnockoutSize(d.teams.length);
+      groupWizardRefreshOptions(); groupWizardStep = 2; groupWizardError = '';
       break;
     }
     case 'wizard-next': {
@@ -6296,58 +6852,73 @@ function handle(action, elId, el){
         groupWizardCapture();
         const parsed = groupWizardParse(d.raw, d.teams);
         d.teams = parsed.teams; d.duplicates = parsed.duplicates;
-        if (d.duplicates.length){ groupWizardError = 'Remove duplicate team names first: ' + d.duplicates.join(', ') + '.'; break; }
-        if (d.teams.length < 2){ groupWizardError = 'Add at least 2 teams before choosing a knockout size.'; break; }
+        if (d.duplicates.length){ groupWizardError = 'Remove duplicate UIDs first: ' + d.duplicates.join(', ') + '.'; break; }
+        if (d.teams.length < 2){ groupWizardError = 'Add at least 2 teams before planning the group stage.'; break; }
         groupWizardRefreshOptions(); groupWizardStep = 2;
       } else if (groupWizardStep === 2){
+        groupWizardRefreshOptions();
+        if (!d.options.length){ groupWizardError = 'No group plan fits those teams. Go back and add or remove teams.'; break; }
+        if (!groupWizardSelected(d)){ groupWizardError = 'Pick one group-break card to continue.'; break; }
+        groupWizardStep = 3;
+      } else if (groupWizardStep === 3){
+        if (d.drawing){ groupWizardError = 'Wait for the animated draw to finish.'; break; }
+        if (!d.groups.length){ groupWizardError = d.method === 'manual' ? 'Start manual placement, then pick a team and add it to a group.' : 'Start the draw first.'; break; }
+        const placed = d.groups.reduce((n, g) => n + g.teams.length, 0);
+        if (placed !== d.teams.length){ groupWizardError = 'Place every team before choosing the knockout size. ' + (d.teams.length - placed) + ' still waiting.'; break; }
+        groupWizardCheckConflicts(); groupWizardStep = 4;
+      } else if (groupWizardStep === 4){
         if (!d.knockoutSize){ groupWizardError = 'Choose a knockout size that fits all your teams.'; break; }
         if (d.knockoutSize > d.teams.length){ groupWizardError = 'That knockout size needs more teams than you entered.'; break; }
-        groupWizardRefreshOptions(); groupWizardStep = 3;
-      } else if (groupWizardStep === 3){
-        groupWizardRefreshOptions();
-        if (!d.options.length){ groupWizardError = 'No group plan fits those teams and knockout size. Go back and change the size.'; break; }
-        groupWizardStep = 4;
-      } else if (groupWizardStep === 4){
-        if (!groupWizardSelected(d)){ groupWizardError = 'Pick one group-break card to continue.'; break; }
-        groupWizardStep = 5;
-      } else if (groupWizardStep === 5){
-        if (d.drawing){ groupWizardError = 'Wait for the animated draw to finish.'; break; }
-        if (!d.groups.length){ groupWizardError = d.method === 'manual' ? 'Start manual placement, then drag every team into a group.' : 'Start the draw first.'; break; }
-        const placed = d.groups.reduce((n, g) => n + g.teams.length, 0);
-        if (placed !== d.teams.length){ groupWizardError = 'Place every team before previewing. ' + (d.teams.length - placed) + ' still waiting.'; break; }
-        groupWizardCheckConflicts();
-        groupWizardStep = 6;
+        if (d.skipGroups){
+          if (!VALID_N.includes(d.teams.length)){ groupWizardError = 'Direct knockouts need 2, 4, 8, 16, 32 or 64 teams. Add or remove teams first.'; break; }
+          if (d.knockoutSize !== d.teams.length){ groupWizardError = 'A direct knockout uses every team — choose ' + d.teams.length + ' teams.'; break; }
+        }
+        groupWizardRefreshOptions(); groupWizardStep = 5;
       }
       break;
     }
     case 'wizard-size': {
       const d = groupWizardDraft; if (!d) break;
       const n = Number(elId);
-      if (!KO_SIZE_CHOICES.includes(n) || n > d.teams.length){ groupWizardError = 'Choose a knockout size that fits your teams.'; break; }
-      d.knockoutSize = n; d.optionId = ''; d.groups = []; groupWizardRefreshOptions(); groupWizardError = '';
+      if (!KO_SIZE_CHOICES.includes(n) || n > d.teams.length || (d.skipGroups && n !== d.teams.length)){
+        groupWizardError = d.skipGroups
+          ? 'A direct knockout uses every team — choose ' + d.teams.length + ' teams.'
+          : 'Choose a knockout size that fits your teams.';
+        break;
+      }
+      if (groupWizardTimer){ clearTimeout(groupWizardTimer); groupWizardTimer = null; }
+      d.knockoutSize = n; d.optionId = ''; d.groups = []; d.conflicts = [];
+      d.drawing = false; d.queue = []; groupWizardPickId = '';
+      groupWizardRefreshOptions();
+      if (d.skipGroups){
+        groupWizardStep = 4; groupWizardError = '';
+      } else {
+        groupWizardStep = 2;
+        groupWizardError = 'Knockout size changed to ' + n + '. Review the group plans — the draw was reset.';
+      }
       break;
     }
     case 'wizard-rr': {
       const d = groupWizardDraft; if (!d) break;
-      d.doubleRound = elId === 'double'; d.optionId = ''; d.groups = []; groupWizardRefreshOptions(); groupWizardError = '';
+      d.doubleRound = elId === 'double'; d.optionId = ''; d.groups = []; groupWizardPickId = ''; groupWizardRefreshOptions(); groupWizardError = '';
       break;
     }
     case 'wizard-option': {
       const d = groupWizardDraft; if (!d) break;
       if (!d.options.some(o => o.id === elId)) break;
-      d.optionId = elId; d.groups = []; d.conflicts = []; groupWizardError = '';
+      d.optionId = elId; d.groups = []; d.conflicts = []; groupWizardPickId = ''; groupWizardError = '';
       break;
     }
     case 'wizard-method': {
       const d = groupWizardDraft; if (!d) break;
       d.method = ['random', 'seeded', 'manual'].includes(elId) ? elId : 'random';
-      d.groups = []; d.queue = []; d.drawing = false; d.conflicts = []; groupWizardError = '';
+      d.groups = []; d.queue = []; d.drawing = false; d.conflicts = []; groupWizardError = ''; groupWizardPickId = '';
       if (groupWizardTimer){ clearTimeout(groupWizardTimer); groupWizardTimer = null; }
       break;
     }
     case 'wizard-manual-start': {
       const d = groupWizardDraft; if (!d) break;
-      d.method = 'manual'; d.groups = []; d.conflicts = []; groupWizardError = '';
+      d.method = 'manual'; d.groups = []; d.conflicts = []; groupWizardError = ''; groupWizardPickId = '';
       groupWizardInitGroups();
       break;
     }
@@ -6362,11 +6933,23 @@ function handle(action, elId, el){
       const d = groupWizardDraft; if (!d) break;
       if (!d.groups.length){ groupWizardInitGroups(); return; }
       if (d.method === 'manual'){
-        d.groups.forEach(g => { g.teams = []; }); d.conflicts = []; groupWizardError = '';
+        d.groups.forEach(g => { g.teams = []; }); d.conflicts = []; groupWizardError = ''; groupWizardPickId = '';
       } else {
         groupWizardStartDraw(); return;
       }
       break;
+    }
+    case 'wizard-pick-team': {
+      const d = groupWizardDraft; if (!d) break;
+      if (!wizardTeamById(d, elId)) break;
+      groupWizardPickId = groupWizardPickId === elId ? '' : elId;
+      groupWizardError = '';
+      break;
+    }
+    case 'wizard-place-team': {
+      const d = groupWizardDraft; if (!d || !groupWizardPickId) break;
+      groupWizardMove(groupWizardPickId, Number(elId));
+      return;
     }
     case 'wizard-move-team': {
       const d = groupWizardDraft; if (!d) break;
@@ -6433,7 +7016,8 @@ function handle(action, elId, el){
       const team = teamById(t, elId); if (!team) break;
       const g = groupOfTeam(t, elId);
       if (confirm(`Remove "${team.name}"? Their results will also be removed.`)){
-        g.teams = g.teams.filter(x => x.id !== elId);
+        if (g) g.teams = g.teams.filter(x => x.id !== elId);
+        else if (Array.isArray(t.teams)) t.teams = t.teams.filter(x => x.id !== elId);
         t.matches = t.matches.filter(m => m.homeId !== elId && m.awayId !== elId);
         if (t.knockouts){
           t.knockouts.rounds.forEach(rd => rd.forEach(m => {
@@ -6682,9 +7266,15 @@ function handle(action, elId, el){
     }
     case 'reset-bracket': {
       if (t && confirm('Reset the whole knockout bracket? All knockout results will be cleared; you can rebuild it from the current standings.')){
+        const wasDirect = !!(t.knockouts && t.knockouts.config && t.knockouts.config.direct);
+        if (wasDirect && Array.isArray(t.teams)){
+          // Give the teams a normal home again so the setup screen can rebuild.
+          t.groups = [{ id: uid('g'), name: 'Group A', teams: t.teams.slice() }];
+          delete t.teams;
+        }
         t.knockouts = null;
         view.pickOverrides = {}; view.qgValues = {}; view.wildcards = 0;
-        flash = '↺ Bracket reset — set it up again with the qualify counts.';
+        flash = wasDirect ? '↺ Bracket reset — teams moved to Group A so you can rebuild it.' : '↺ Bracket reset — set it up again with the qualify counts.';
         logMsg = 'Reset the knockout bracket';
       }
       break;
@@ -6740,6 +7330,18 @@ document.addEventListener('click', e => {
   e.preventDefault();
   handle(el.dataset.action, el.dataset.id || null, el);
 });
+document.addEventListener('click', e => {
+  if (!registrationModalId) return;
+  if (e.target && e.target.classList && e.target.classList.contains('modal-backdrop')){
+    registrationClose(); render();
+  }
+});
+// Enter inside the registration popup should register, not submit the page away.
+document.addEventListener('submit', e => {
+  if (!e.target || e.target.getAttribute('data-form') !== 'registration') return;
+  e.preventDefault();
+  if (registrationModalId) handle('registration-submit', registrationModalId, e.target);
+});
 document.addEventListener('input', e => {
   if (e.target && e.target.id === 'siteSearch') updateSearchResults(e.target.value);
 });
@@ -6764,16 +7366,32 @@ document.addEventListener('change', e => {
       if (team){ team.seed = !!el.checked; groupWizardError = ''; render(); }
       return;
     }
+    const wizardNameId = el.getAttribute('data-wizard-name');
+    if (wizardNameId && groupWizardDraft){
+      const team = wizardTeamById(groupWizardDraft, wizardNameId);
+      if (team){ team.name = String(el.value || '').trim().slice(0, 30) || team.name; groupWizardSyncRaw(); render(); }
+      return;
+    }
     const clubId = el.getAttribute('data-wizard-club');
     if (clubId && groupWizardDraft){
       const team = wizardTeamById(groupWizardDraft, clubId);
-      if (team){ team.club = String(el.value || '').trim().slice(0, 30); groupWizardCheckConflicts(); render(); }
+      if (team){ team.club = String(el.value || '').trim().slice(0, 30); groupWizardSyncRaw(); groupWizardCheckConflicts(); render(); }
       return;
     }
     const tagId = el.getAttribute('data-wizard-tag');
     if (tagId && groupWizardDraft){
       const team = wizardTeamById(groupWizardDraft, tagId);
-      if (team){ team.tag = String(el.value || '').trim().slice(0, 30); groupWizardCheckConflicts(); render(); }
+      if (team){
+        team.tag = String(el.value || '').trim().slice(0, 30);
+        groupWizardDraft.duplicates = [];
+        const seenKeys = {};
+        groupWizardDraft.teams.forEach(t => {
+          const key = wizardTeamKey(t);
+          if (seenKeys[key]) groupWizardDraft.duplicates.push(key);
+          seenKeys[key] = true;
+        });
+        groupWizardSyncRaw(); groupWizardCheckConflicts(); render();
+      }
       return;
     }
     const moveId = el.getAttribute('data-wizard-move');
@@ -6891,6 +7509,9 @@ document.addEventListener('drop', e => {
   if (id) groupWizardMove(id, Number(drop.getAttribute('data-wizard-drop')));
 });
 document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && registrationModalId){
+    registrationClose(); render(); return;
+  }
   if (e.target && e.target.id === 'siteSearch'){
     const box = document.getElementById('siteSearchResults');
     if (e.key === 'Escape'){

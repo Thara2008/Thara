@@ -66,7 +66,9 @@ function buildSandbox(opts){
     fetch: async (url, opts = {}) => {
       const u = String(url);
       if (u === '/api/state'){
-        return { ok: true, status: 200, json: async () => ({ state: server.state, activity: server.activity, me: serverToken ? me : null, streams }) };
+        // Mirror the real backend: the change feed is only sent to signed-in admins.
+        const authed = !!(opts.headers && opts.headers.Authorization);
+        return { ok: true, status: 200, json: async () => ({ state: server.state, activity: authed ? server.activity : [], me: authed && serverToken ? me : null, streams }) };
       }
       if (u === '/api/login'){
         const b = JSON.parse(opts.body || '{}');
@@ -111,8 +113,8 @@ const SUITE_SSE = `
   T('IS_SERVER true', IS_SERVER === true);
   T('starts read-only (no token)', unlocked === false && serverMe === null);
   T('header shows the Admin Login button', __appEl.innerHTML.indexOf('Admin Login') !== -1);
-  T('dashboard renders the Recent changes feed', __appEl.innerHTML.indexOf('Recent changes') !== -1 && __appEl.innerHTML.indexOf('Created the league') !== -1);
-  T('activity list includes the actor name', __appEl.innerHTML.indexOf('>Sam<') !== -1);
+  T('anonymous dashboard hides the Recent changes feed', __appEl.innerHTML.indexOf('Recent changes') === -1);
+  T('anonymous client does not cache the activity feed', activity.length === 0);
   T('no polling started when SSE is available', __intervals.length === 0);
 
   console.log('\\n[server-mode client A] unchanged sync skips re-render');
@@ -127,6 +129,8 @@ const SUITE_SSE = `
   await sleep(10);
   T('login unlocks and caches the token', unlocked === true && sessionStorage.getItem('fcm_token') === 'tk-sam');
   T('header shows the admin badge + name', __appEl.innerHTML.indexOf('Log out') !== -1 && __appEl.innerHTML.indexOf('>Sam<') !== -1);
+  T('signed-in admin now sees the change feed', __appEl.innerHTML.indexOf('Recent changes') !== -1 && __appEl.innerHTML.indexOf('Created the league') !== -1);
+  T('activity feed includes the actor name', __appEl.innerHTML.indexOf('>Sam<') !== -1);
 
   console.log('\\n[server-mode client A] admin save goes to the server');
   setEl('newTournamentName', 'World Cup');
@@ -159,12 +163,21 @@ const SUITE_POLL = `
     if (cond) console.log('  ✅ ' + name);
     else { console.log('  ❌ ' + name + (extra ? ' — ' + JSON.stringify(extra) : '')); fails++; }
   };
+  const setEl = (id, val) => { document.getElementById(id).value = val; };
+  const click = (action, id) => handle(action, id || null, { dataset: {}, getAttribute(){return null;} });
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   console.log('\\n[server-mode client B: serverless / Vercel] boots online with polling');
   T('IS_SERVER true', IS_SERVER === true);
   T('no EventSource used', __esHolder.inst === null);
   T('4s polling interval scheduled', __intervals.length >= 1 && __intervals[0].ms === 4000);
-  T('dashboard shows the Recent changes feed', __appEl.innerHTML.indexOf('Recent changes') !== -1);
+  T('anonymous dashboard hides the Recent changes feed', __appEl.innerHTML.indexOf('Recent changes') === -1);
+
+  console.log('\\n[server-mode client B] admin login unlocks the feed');
+  setEl('loginUser', 'sam'); setEl('loginPass', 'pass123');
+  click('login');
+  await sleep(10);
+  T('admin sees the change feed after login', unlocked === true && __appEl.innerHTML.indexOf('Recent changes') !== -1);
 
   console.log('\\n[server-mode client B] poll picks up another admin\\'s change');
   __server.state.tournaments.push({ id: 't2', name: 'From another admin', createdAt: 1, groups: [], matches: [], knockouts: null });

@@ -2,16 +2,17 @@
 
 The official **Ceylon FC** league website: a complete tournament manager and club newsroom for
 FC Mobile leagues, built around **World Cup–style groups**, automatic points tables,
-**admin-chosen qualify counts + wildcards**, dynamic **knockout brackets**, and per-team
-**advice for next tournaments** — plus a **shared multi-user website** with **per-admin accounts**,
-a **live change feed**, and **real-time updates** for every viewer.
+**admin-chosen qualify counts + wildcards**, dynamic **knockout brackets**, public **tournament
+registration**, and per-team **advice for next tournaments** — plus a **shared multi-user website**
+with **per-admin accounts**, an **admin-only change feed**, and **real-time updates** for every viewer.
 
 ## 🧭 Website tabs
 
 | Tab | What it shows |
 |-----|---------------|
-| 🏠 **Home** | Hero + season, announcement banner, next fixtures, latest news, honours, open poll, Player of the Month and recent changes |
+| 🏠 **Home** | Hero + season, announcement banner, next fixtures, latest news, honours, open poll and Player of the Month |
 | 🏆 **League** | The full tournament manager — groups, tables, rankings, matches and knockouts |
+| 📝 **Reg** | Pick a tournament and register a team (Name, Username, UID); admins can hand sign-ups to the wizard |
 | 📅 **Fixtures** | Every upcoming tie and recorded result, kickoff times in the visitor's local time zone, `.ics` calendar downloads and match reports |
 | 📰 **News** | Club stories, match reports, announcements, transfers and interviews with categories, cover images and share links |
 | 🎮 **Fan Zone** | Predictions, one-vote MOTM, fantasy Team of the Week and public polls |
@@ -21,8 +22,8 @@ a **live change feed**, and **real-time updates** for every viewer.
 | 📖 **About** | Club story, mission, league format, staff, contact/social links and sponsors (admins can edit everything, including the club crest) |
 
 Tabs switch instantly without a reload and remember the last one you visited. Every feature has a
-shareable hash route: `#home`, `#league`, `#fixtures`, `#news`, `#fans`, `#players`, `#power`,
-`#hall`, `#about`, plus `#news/<id>`, `#match/<matchKey>` and `#player/<id>` detail pages.
+shareable hash route: `#home`, `#league`, `#reg`, `#fixtures`, `#news`, `#fans`, `#players`, `#power`,
+`#hall`, `#about`, plus `#reg/<tournamentId>`, `#news/<id>`, `#match/<matchKey>` and `#player/<id>` detail pages.
 Fan Zone subroutes are `#predict`, `#motm`, `#fantasy` and `#polls`.
 
 The header also has a **global search bar**. It searches every team and shows that team's **next
@@ -50,7 +51,8 @@ Results are keyboard accessible and update as you type.
 - **Admins have their own accounts** (username + password). Anyone else is read-only.
 - All admins edit the **same** data; every change is saved on the server and
   **shown live to everyone** (via Server-Sent Events — no page refresh needed).
-- A **🕓 Recent changes** feed on the dashboard shows *who changed what and when*.
+- The **🕓 Recent changes** feed shows *who changed what and when* **only while signed in as an
+  admin**. Visitors never receive or see that feed; public submissions are not logged in it.
 - In hosted mode the server re-checks the session and role on **every admin action**, so the
   browser-only bypass above does not apply.
 
@@ -100,7 +102,30 @@ Storage details:
 
 ### Multiple tournaments at once
 - Create unlimited leagues on the dashboard (e.g. "Premier League", "Weekend Cup").
-- Each tournament has its own teams, results, table and knockout bracket.
+- Each tournament has its own teams, results, table, knockout bracket and registration list.
+
+### 📝 Public tournament registration
+- The main **📝 Reg** tab sits between **League** and **Fixtures**. Pick a tournament from the pills
+  (or open `#reg/<tournamentId>`, or click **📝 Register** on a tournament page), then press
+  **＋ Register your team**: a popup asks for exactly **Name**, **Username** and **UID**.
+- The popup is optional — explorers can close it (Cancel, ×, Escape or backdrop click) without
+  adding anything, or ignore the page completely.
+- The **UID is the only identity** used to separate players (case-insensitive); Usernames may repeat.
+  A signed-up team is marked **In tournament** once an admin places it from the wizard.
+- In hosted mode, public submissions go to **`POST /api/register`**. The server applies the same
+  limits and UID-only duplicate check, and does **not** add an entry to the admin activity feed.
+- Admins can remove a sign-up or clear all sign-ups, then use **🧩 Add registered teams to wizard**.
+  The wizard shows each registered **Username as the team name** and keeps the **UID** as hidden
+  identity. Locking it creates the groups, single-leg group fixtures and a pending knockout bracket.
+  Each created team keeps a link to its registration, and the first knockout round is seeded from
+  the real group tables once all group matches have scores.
+- The Group Setup Wizard runs **Teams → Group stage → Place teams → Knockout → Preview**. A knockout
+  size is auto-selected while planning the groups; changing it on the Knockout step resets the group
+  plan and draw so every plan stays valid.
+- Admins who want a straight knockout can press **⚡ Skip groups → knockouts** on the Teams step. The
+  wizard jumps to the Knockout step, marks the group steps as skipped, and Lock creates a filled
+  bracket with no groups or group fixtures. This needs a bracket-sized field (2, 4, 8, 16, 32 or 64
+  teams); marked seeds get protected slots. **Use group stage instead** switches back at any time.
 
 ### World Cup–style groups
 - Every tournament starts with a **Group A**; add as many as needed (B, C, D, …) — auto-named.
@@ -189,8 +214,8 @@ Two runtime profiles are included — pick whichever fits your free-host:
 | Live updates for viewers | **Instant** (SSE push) | Every ~4 s (automatic polling) |
 | Code changes needed | None | None |
 
-On either one, **anyone with the link sees admin changes live** — only logged-in admins
-can edit — plus the 🕓 Recent changes feed shows *who changed what*.
+On either one, **anyone with the link sees admin changes live** and can register for tournaments —
+only logged-in admins can edit, and the 🕓 Recent changes feed is **admin-only**.
 
 ### Option A — Vercel (free, quick public URL) ⭐
 1. **Create storage (two easy choices — no app code changes either way):**
@@ -212,7 +237,8 @@ can edit — plus the 🕓 Recent changes feed shows *who changed what*.
 6. Log in as the head admin and add the other admins from the dashboard (👥 Admins).
 
 > On Vercel the browser polls `/api/state` every ~4 seconds, so another admin's change
-> appears almost immediately and the Recent changes feed refreshes on its own.
+> appears almost immediately. The Recent changes feed refreshes on its own for signed-in admins;
+> anonymous visitors receive an empty activity list.
 
 ### Option B — Render.com (free, instant push) 
 1. Push this folder to a GitHub repo.
@@ -275,11 +301,11 @@ Runs five suites (zero external dependencies):
 
 | Suite | What it covers |
 |-------|----------------|
-| `test.js` | App logic: local admin accounts, PBKDF2 login, lockout, head-only actions, groups, single-leg group fixtures (including double round-robin), tables, qualify counts, wildcards, seeding, two-leg knockout, migration, rankings, advice |
+| `test.js` | App logic: local admin accounts, PBKDF2 login, lockout, head-only actions, groups, single-leg group fixtures (including double round-robin), tables, qualify counts, wildcards, seeding, two-leg knockout, public registration validation/duplicates, wizard import + auto placement, migration, rankings, advice |
 | `render-smoke.js` | Rendering: read-only + head-admin views, brackets, animations markup |
-| `feature-smoke.js` | Every public route, global search (teams/next fixture/players/news/pages), empty states, XSS escaping, announcement dismissal, fixture filters/calendar, news, match reports, predictions, MOTM, fantasy, polls and admin CRUD/activity messages |
-| `api-test.js` | Backend: signed sessions (login/logout/verify), public read, shared saves, change feed, head-only account admin, password/reset invalidation, login lockout, SSE broadcasts, `/api/fan` voting rules, Redis storage adapter (via mock REST) |
-| `sync-test.js` | Browser↔server sync: SSE host (instant push) + serverless host (Vercel-style polling), account login, authenticated saves, live updates, activity feed, no-render-when-unchanged |
+| `feature-smoke.js` | Every public route, global search (teams/next fixture/players/news/pages), main Reg tab + popup, admin-only change feed, empty states, XSS escaping, announcement dismissal, fixture filters/calendar, news, match reports, predictions, MOTM, fantasy, polls and admin CRUD/activity messages |
+| `api-test.js` | Backend: signed sessions (login/logout/verify), public read, shared saves, admin-only change feed, head-only account admin, password/reset invalidation, login lockout, SSE broadcasts, `/api/fan` voting rules, `/api/register` validation/duplicates, Redis storage adapter (via mock REST) |
+| `sync-test.js` | Browser↔server sync: SSE host (instant push) + serverless host (Vercel-style polling), account login, authenticated saves, live updates, admin-only activity feed, no-render-when-unchanged |
 
 ---
 
@@ -287,4 +313,5 @@ Runs five suites (zero external dependencies):
 - Teams with 0 goals: enter `0` — numbers are fine left as-is.
 - You can't record the same exact fixture twice; use **Edit** to change a score.
 - Use **Export Backup** before a knockout reset to keep a safety copy.
-- On the shared site, **log out** on shared computers; use the 🕓 feed to see what other admins did.
+- On the shared site, **log out** on shared computers; the 🕓 feed is available only while you are
+  signed in as an admin.

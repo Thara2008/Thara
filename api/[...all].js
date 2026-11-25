@@ -3,7 +3,8 @@
  * Vercel serverless entry point (catch-all for /api/*)
  * ------------------------------------------------------------
  * Everything the app needs over HTTP lives behind /api/state,
- * /api/login, /api/logout, /api/save, /api/users (see lib/handler.js).
+ * /api/login, /api/logout, /api/save, /api/users, /api/fan and
+ * /api/register (see lib/handler.js).
  *
  * Data + admin accounts live in Upstash Redis (REST — zero deps).
  * No SSE here: the app auto-detects `streams: false` and polls

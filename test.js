@@ -303,16 +303,54 @@ const suite = `
   state.tournaments.push(wt); openTournamentState(wt);
   const wd = groupWizardBlank();
   wd.teams = ['Q1','Q2','Q3','Q4','Q5','Q6','Q7','Q8'].map((n, i) => ({ id: 'w' + i, name: n, club: '', tag: '', seed: i < 2 }));
-  wd.knockoutSize = 4;
   groupWizardDraft = wd; groupWizardRefreshOptions();
+  T('wizard auto-selects the largest knockout size that fits', wd.knockoutSize === 8);
+  wd.knockoutSize = 4;
+  groupWizardRefreshOptions();
   T('wizard builds group-break options', wd.options.length > 0 && wd.options[0].recommended === true);
   const wo = wd.options.find(o => o.wildcards === 0 && o.groupCount >= 2) || wd.options[0];
   wd.optionId = wo.id;
   wd.groups = wo.sizes.map((size, i) => ({ name: 'Group ' + String.fromCharCode(65 + i), capacity: size, teams: [] }));
+
+  // Manual placement must work by click/select alone, and a full target group
+  // must never eject a team from its current group.
+  const moveDraft = groupWizardBlank();
+  moveDraft.teams = ['M0','M1','M2'].map((name, i) => ({ id: 'mv' + i, name, club: '', tag: '', seed: false }));
+  moveDraft.groups = [
+    { name: 'Group A', capacity: 2, teams: ['mv0'] },
+    { name: 'Group B', capacity: 1, teams: ['mv1'] }
+  ];
+  groupWizardDraft = moveDraft;
+  groupWizardPickId = 'mv0';
+  const picker = groupWizardPickHTML(moveDraft);
+  T('manual placement offers click-to-add controls without dragging',
+    picker.indexOf('data-action="wizard-pick-team"') !== -1 &&
+    picker.indexOf('data-action="wizard-place-team"') !== -1 &&
+    picker.indexOf('Add to Group B') !== -1 && picker.indexOf('mv0') !== -1);
+  T('moving into a full group keeps the team in its current group',
+    groupWizardMove('mv0', 1) === false &&
+    moveDraft.groups[0].teams.indexOf('mv0') !== -1 &&
+    moveDraft.groups[1].teams.indexOf('mv0') === -1);
+  groupWizardError = '';
+  groupWizardPickId = 'mv2';
+  T('click placement adds the selected team and clears the pick',
+    groupWizardMove('mv2', 0) === true &&
+    moveDraft.groups[0].teams.indexOf('mv2') !== -1 &&
+    groupWizardPickId === '');
+  groupWizardDraft = wd;
+  groupWizardPickId = '';
+  groupWizardError = '';
+
   let cursor = 0;
   wd.groups.forEach(g => { g.teams = wd.teams.slice(cursor, cursor + g.capacity).map(x => x.id); cursor += g.capacity; });
   wd.method = 'manual'; wd.drawing = false; groupWizardCheckConflicts();
-  groupWizardOpen = true; groupWizardStep = 6;
+  groupWizardOpen = true; groupWizardStep = 5;
+  const wizardMarkup = groupWizardHTML(wt);
+  const groupStepAt = wizardMarkup.indexOf('Group stage');
+  const knockoutStepAt = wizardMarkup.indexOf('Knockout');
+  const previewStepAt = wizardMarkup.indexOf('Preview');
+  T('wizard plans the group stage before the knockout stage and preview',
+    groupStepAt !== -1 && groupStepAt < knockoutStepAt && knockoutStepAt < previewStepAt);
   T('wizard lock creates group fixtures + an empty pending bracket',
     groupWizardLock(wt) === true && wt.groups.length === wo.groupCount &&
     wt.matches.length === wo.totalGroupMatches && wt.knockouts.config.pending === true &&
@@ -327,6 +365,7 @@ const suite = `
     const ga = groupOfTeam(wt, m.homeId), gb = groupOfTeam(wt, m.awayId);
     return ga && gb && ga.id !== gb.id;
   }));
+  groupWizardDraft = wd; groupWizardOpen = true;
   wd.doubleRound = true;
   groupWizardRefreshOptions();
   const wo2 = wd.options[0];
@@ -338,6 +377,71 @@ const suite = `
   T('double round-robin group fixtures remain single-leg',
     wt.matches.length === wo2.totalGroupMatches &&
     wt.matches.every(m => m.legMode == null && m.leg2HomeScore == null && m.leg2AwayScore == null && isTwoLeg(m) === false));
+  groupWizardDraft = wd; groupWizardOpen = true;
+  groupWizardStep = 4;
+  click('wizard-size', '2');
+  T('changing knockout size returns to the group stage and resets the draw',
+    groupWizardStep === 2 && wd.knockoutSize === 2 && wd.optionId === '' &&
+    wd.groups.length === 0 && groupWizardError.indexOf('draw was reset') !== -1);
+
+  // Direct knockout: an admin can skip groups entirely.
+  const dt = { id: 'direct-' + Date.now(), name: 'Direct Cup', createdAt: Date.now(),
+    groups: [{ id: 'dtg', name: 'Group A', teams: [] }], matches: [], knockouts: null, registrations: [] };
+  state.tournaments.push(dt); openTournamentState(dt);
+  groupWizardOpen = true; groupWizardDraft = groupWizardBlank(); groupWizardStep = 1; groupWizardError = '';
+  document.getElementById('wizardTeams').value = ['D1','D2','D3','D4','D5','D6','D7','D8'].join('\\n');
+  click('wizard-skip');
+  const dd = groupWizardDraft;
+  T('admin can skip the group stage straight to knockouts',
+    groupWizardStep === 4 && dd.skipGroups === true && dd.knockoutSize === 8 && dd.groups.length === 0);
+  T('skipped group steps are marked in the wizard',
+    groupWizardHTML(dt).indexOf('class="skipped"') !== -1 &&
+    groupWizardHTML(dt).indexOf('<small>skipped</small>') !== -1);
+  dd.teams[0].seed = true; dd.teams[1].seed = true;
+  dd.teams[0].tag = 'UID-D1'; dd.teams[0].registrationId = 'rd1';
+  dt.registrations = [{ id: 'rd1', name: 'Reg D1', username: 'D1', uid: 'UID-D1', device: '', createdAt: 0 }];
+  groupWizardStep = 5;
+  T('direct preview shows first-round pairs without group cards',
+    groupWizardHTML(dt).indexOf('wizard-direct-pair') !== -1 &&
+    groupWizardHTML(dt).indexOf('data-wizard-drop') === -1);
+  T('direct knockout lock creates no groups or group fixtures',
+    groupWizardLock(dt) === true && dt.groups.length === 0 && dt.matches.length === 0 &&
+    Array.isArray(dt.teams) && dt.teams.length === 8);
+  T('direct bracket is filled immediately and not pending',
+    dt.knockouts.config.direct === true && dt.knockouts.config.pending !== true &&
+    dt.knockouts.rounds[0].every(m => m.homeId && m.awayId));
+  T('direct bracket teams resolve by name',
+    dt.knockouts.rounds[0].every(m => teamById(dt, m.homeId) && teamById(dt, m.awayId) &&
+      teamName(dt, m.homeId) !== '???' && teamName(dt, m.awayId) !== '???'));
+  T('marked seeds get protected first-round slots',
+    teamById(dt, dt.knockouts.rounds[0][0].homeId).name === 'D1' &&
+    teamById(dt, dt.knockouts.rounds[0][0].awayId).name === 'D8' &&
+    teamById(dt, dt.knockouts.rounds[0][2].homeId).name === 'D2' &&
+    teamById(dt, dt.knockouts.rounds[0][2].awayId).name === 'D7');
+  T('registrations stay placed through their UID in a direct bracket',
+    registrationPlaced(dt, dt.registrations[0]) === true &&
+    dt.teams.every(team => !team.note));
+  const backDraft = groupWizardBlank();
+  backDraft.teams = dd.teams.slice(); backDraft.skipGroups = true; backDraft.knockoutSize = 8;
+  groupWizardDraft = backDraft; groupWizardOpen = true; groupWizardStep = 4;
+  click('wizard-use-groups');
+  T('admin can switch back from direct knockout to the group stage',
+    groupWizardStep === 2 && backDraft.skipGroups === false && backDraft.knockoutSize === 8);
+
+  const dtBad = { id: 'direct-bad-' + Date.now(), name: 'Bad Direct', createdAt: Date.now(),
+    groups: [], matches: [], knockouts: null, registrations: [] };
+  state.tournaments.push(dtBad); openTournamentState(dtBad);
+  groupWizardOpen = true; groupWizardDraft = groupWizardBlank(); groupWizardStep = 1; groupWizardError = '';
+  document.getElementById('wizardTeams').value = ['E1','E2','E3','E4','E5','E6'].join('\\n');
+  click('wizard-skip');
+  T('skip warns when the team count cannot make a bracket',
+    groupWizardStep === 1 && groupWizardError.indexOf('Direct knockouts need') === 0);
+  const badDraft = groupWizardBlank();
+  badDraft.teams = ['E1','E2','E3','E4','E5','E6'].map((name, i) => ({ id: 'e' + i, name, club: '', tag: '', seed: false }));
+  badDraft.skipGroups = true; badDraft.knockoutSize = 4;
+  groupWizardDraft = badDraft; groupWizardOpen = true;
+  T('direct lock rejects a team count that is not a bracket size',
+    groupWizardLock(dtBad) === false && groupWizardError.indexOf('all teams') !== -1);
 
   const kt = { id: 'ko-' + Date.now(), name: 'Two-leg Cup', createdAt: Date.now(),
     groups: [{ id: 'kg', name: 'Group A', teams: ['K1','K2','K3','K4'].map((n, i) => ({ id: 'k' + i, name: n, note: '' })) }],
@@ -378,6 +482,77 @@ const suite = `
   T('knockout analysis derives verdicts and labels the estimate',
     koAnalysisHTML(kt).indexOf('Estimate, not a prediction') !== -1 &&
     koAnalysisHTML(kt).indexOf('verdict-tag') !== -1);
+
+  console.log('\\n[13] Public registration -> wizard import -> groups + knockout bracket');
+  const rt = { id: 'rt', name: 'Registration Cup', createdAt: Date.now(),
+    groups: [{ id: 'rtg', name: 'Group A', teams: [] }], matches: [], knockouts: null, registrations: [] };
+  state.tournaments.push(rt); openTournamentState(rt);
+  unlocked = false; // visitors can register without an admin session
+  setEl('regName', 'A'); setEl('regUsername', 'PlayerA'); setEl('regUid', 'UID-A1');
+  click('registration-submit');
+  T('short name is rejected', registrationsOf(rt).length === 0 && registrationError.indexOf('Name must') === 0);
+  setEl('regName', 'Alpha'); click('registration-submit');
+  T('public registration saves Name / Username / UID', registrationsOf(rt).length === 1 &&
+    registrationLine(rt.registrations[0]) === 'PlayerA |  | UID-A1');
+  T('registration is not placed in the tournament yet', registrationPlaced(rt, rt.registrations[0]) === false);
+  click('registration-submit');
+  T('duplicate UID is rejected', registrationsOf(rt).length === 1 && registrationError.indexOf('UID is already registered') !== -1);
+  T('duplicate detection uses UID only, case-insensitively',
+    registrationDuplicate(rt, { name: 'X', username: 'playera', uid: 'UID-X' }) === false &&
+    registrationDuplicate(rt, { name: 'X', username: 'PlayerX', uid: 'uid-a1' }) === true);
+  [['Bravo','PlayerA','UID-B2'], ['Charlie','PlayerC','UID-C3'], ['Delta','PlayerD','UID-D4']].forEach(r => {
+    setEl('regName', r[0]); setEl('regUsername', r[1]); setEl('regUid', r[2]); click('registration-submit');
+  });
+  T('four public teams are registered', registrationsOf(rt).length === 4);
+  const publicTab = registrationTabHTML(rt);
+  T('registration tab lists teams but hides admin controls from visitors',
+    publicTab.indexOf('Alpha') !== -1 && publicTab.indexOf('PlayerA') !== -1 &&
+    publicTab.indexOf('data-action="registration-clear"') === -1 &&
+    publicTab.indexOf('data-action="wizard-import-registrations"') === -1);
+  click('registration-open');
+  const modal = registrationModalHTML();
+  T('registration popup collects exactly Name, Username and UID',
+    modal.indexOf('id="regName"') !== -1 && modal.indexOf('id="regUsername"') !== -1 &&
+    modal.indexOf('id="regUid"') !== -1 && modal.indexOf('exploring') !== -1);
+  click('registration-close');
+  T('registration popup can be ignored / closed', registrationModalId === '' && registrationModalHTML() === '');
+
+  unlocked = true; // now hand the sign-ups to the admin wizard
+  T('admin registration tools are visible to admins',
+    registrationTabHTML(rt).indexOf('data-action="wizard-import-registrations"') !== -1 &&
+    registrationTabHTML(rt).indexOf('data-action="registration-clear"') !== -1);
+  click('wizard-import-registrations');
+  const idt = groupWizardDraft;
+  T('wizard import shows Username as the team name and keeps UID as identity', groupWizardOpen === true && idt.source === 'registrations' &&
+    idt.teams.length === 4 && idt.teams[0].name === 'PlayerA' && idt.teams[0].club === '' && idt.teams[0].tag === 'UID-A1' &&
+    idt.teams[1].name === 'PlayerA' && idt.teams[1].tag === 'UID-B2');
+  T('wizard import keeps a link back to every registration',
+    idt.teams.every(team => !!team.registrationId) &&
+    idt.teams.map(team => team.registrationId).join(',') === rt.registrations.map(r => r.id).join(','));
+  T('matching Usernames with different UIDs are not flagged as duplicates', idt.duplicates.length === 0);
+  T('wizard explains UID-only identity and Username display',
+    groupWizardHTML(rt).indexOf('the UID is used only to keep duplicate players apart') !== -1 &&
+    groupWizardHTML(rt).indexOf('the Username is shown as the team name') !== -1 &&
+    groupWizardHTML(rt).indexOf('placeholder="UID"') !== -1);
+  idt.knockoutSize = 4; groupWizardRefreshOptions();
+  const rOpt = idt.options.find(o => o.wildcards === 0 && o.groupCount >= 2) || idt.options[0];
+  idt.optionId = rOpt.id; groupWizardInitGroups();
+  let cursorR = 0;
+  idt.groups.forEach(g => { g.teams = idt.teams.slice(cursorR, cursorR + g.capacity).map(x => x.id); cursorR += g.capacity; });
+  T('wizard lock creates groups and a pending knockout bracket with registration links',
+    groupWizardLock(rt) === true && rt.groups.length >= 2 &&
+    allTeams(rt).every(team => !!team.registrationId) &&
+    rt.knockouts && rt.knockouts.config.pending === true &&
+    rt.matches.every(m => m.groupId && m.homeGoals == null));
+  T('created teams display Username only and do not show UID notes',
+    allTeams(rt).every(team => team.name === 'PlayerA' || team.name === 'PlayerC' || team.name === 'PlayerD') &&
+    allTeams(rt).every(team => !team.note));
+  T('registered teams are now counted as placed by UID link',
+    rt.registrations.every(reg => registrationPlaced(rt, reg) === true));
+  rt.matches.forEach(m => { m.homeGoals = 1; m.awayGoals = 0; });
+  T('bracket seeds from completed group tables', seedPendingBracket(rt) === true &&
+    rt.knockouts.config.pending === false && rt.knockouts.rounds[0].length === 2);
+  groupWizardOpen = false; groupWizardDraft = null;
 
   console.log('\\n[10] Migration check: legacy single-table + qf/sf/final (see second context run)');
   console.log('\\n' + (fails === 0 ? '🎉 ALL TESTS PASSED' : '⚠️  ' + fails + ' TEST(S) FAILED'));

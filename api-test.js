@@ -81,12 +81,42 @@ function readWithTimeout(reader, ms){
     r = await post('api/save', { state: st, message: 'Recorded a test' }, tok);
     T('authorized save -> 200', r.status === 200);
 
-    r = await get('api/state');
+    r = await get('api/state', tok);
     d = await r.json();
     T('state persisted', d.state.tournaments.length === 1 && d.state.tournaments[0].name === 'API Test');
     T('change logged with actor + message',
       d.activity[0].message === 'Recorded a test' && d.activity[0].user === 'Head Admin' &&
       d.activity.some(a => a.message === 'Logged in' && a.user === 'Head Admin'));
+    const anonymous = await (await get('api/state')).json();
+    T('change feed is not sent to anonymous visitors', Array.isArray(anonymous.activity) && anonymous.activity.length === 0);
+
+    // ---- public tournament registration (no login, no activity entry) ----
+    const activityBeforeRegister = d.activity.length;
+    const reg = { tournamentId: 't1', name: 'Lions', username: 'LionKing', uid: 'UID-1001', device: 'test-device-1' };
+    r = await post('api/register', reg);
+    T('public registration succeeds without a token', r.status === 200 && (await r.json()).ok === true);
+    const anonReg = await (await get('api/state')).json();
+    const savedReg = anonReg.state.tournaments[0].registrations || [];
+    T('registration is stored on the tournament', savedReg.length === 1 &&
+      savedReg[0].name === reg.name && savedReg[0].username === reg.username && savedReg[0].uid === reg.uid);
+    T('public registration is not written to the admin activity log',
+      (await (await get('api/state', tok)).json()).activity.length === activityBeforeRegister);
+    r = await post('api/register', Object.assign({}, reg, { username: 'lionking', uid: 'UID-2002' }));
+    T('the same Username with a different UID is allowed', r.status === 200);
+    r = await post('api/register', Object.assign({}, reg, { username: 'OtherPlayer', uid: 'uid-1001' }));
+    T('duplicate UID is rejected case-insensitively', r.status === 409);
+    r = await post('api/register', Object.assign({}, reg, { name: 'L', username: 'NewPlayer', uid: 'UID-2003' }));
+    T('short name rejected', r.status === 400);
+    r = await post('api/register', Object.assign({}, reg, { name: 'Tigers', username: 'x', uid: 'UID-2003' }));
+    T('short username rejected', r.status === 400);
+    r = await post('api/register', Object.assign({}, reg, { name: 'Tigers', username: 'Tiger', uid: '1' }));
+    T('short UID rejected', r.status === 400);
+    r = await post('api/register', Object.assign({}, reg, { name: 'A|B', username: 'Tiger', uid: 'UID-2003' }));
+    T('wizard separator characters rejected', r.status === 400);
+    r = await post('api/register', Object.assign({}, reg, { tournamentId: 'missing', name: 'Tigers', username: 'Tiger', uid: 'UID-2003' }));
+    T('unknown tournament rejected', r.status === 404);
+    r = await post('api/register', Object.assign({}, reg, { device: '' }));
+    T('missing device rejected', r.status === 400);
 
     // ---- me via token ----
     r = await get('api/state', tok);
@@ -159,7 +189,7 @@ function readWithTimeout(reader, ms){
     r = await post('api/login', { username: 'sam', password: 'resetpass' });
     T('removed admin cannot log in', r.status === 401);
 
-    r = await get('api/state');
+    r = await get('api/state', tok);
     d = await r.json();
     T('feed shows both actors and account actions',
       d.activity.some(a => a.user === 'Sammy') &&
@@ -194,7 +224,7 @@ function readWithTimeout(reader, ms){
     ac.abort();
 
     // ---- persistence across reads ----
-    r = await get('api/state');
+    r = await get('api/state', tok);
     d = await r.json();
     T('feed persisted (latest entry first)', d.activity[0].message === 'SSE poke' && d.activity.length >= 8);
 
