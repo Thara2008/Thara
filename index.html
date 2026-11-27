@@ -3808,6 +3808,176 @@ function koPendingHTML(t){
     <p class="hint">${stats.done}/${stats.total || 0} group fixtures have a result${stats.complete ? ' — ready to seed.' : stats.total ? ' — the bracket fills automatically after the last score.' : '. Generate group fixtures first.'}</p>
   </div>`;
 }
+/* ================= KNOCKOUT BRACKET TREE (animated, mirrored) ================= */
+const kbIntroSeen = {};
+function kbTeamRow(t, id, score, winId){
+  const has = !!id;
+  const isWin = has && !!winId && id === winId;
+  const isLose = has && !!winId && id !== winId;
+  return `<div class="kb-team${isWin ? ' is-win' : ''}${isLose ? ' is-lose' : ''}${has ? '' : ' is-tbd'}"${has ? ` data-team="${esc(id)}"` : ''}>
+    <span class="kb-name">${has ? esc(teamName(t, id)) : 'TBD'}</span>
+    ${isWin ? '<span class="kb-trophy">🏆</span>' : ''}
+    <span class="kb-score">${score != null ? esc(score) : '–'}</span>
+  </div>`;
+}
+function kbCardHTML(t, m, r, i, pos, rounds, side){
+  const a = tieAggregate(m);
+  const ready = !!(m.homeId && m.awayId);
+  const isFinal = r === rounds.length - 1;
+  const live = ready && !a.winnerId;
+  const dst = !isFinal ? rounds[r + 1][Math.floor(i / 2)] : null;
+  const attrs = a.complete && ready ? ` data-action="open-match" data-id="${esc(matchKey(t, m, 'k'))}" role="button" tabindex="0" title="Open match report"` : '';
+  const hs = a.aggH, as = a.aggA;
+  const tag = a.penH != null && a.penA != null ? `<span class="kb-tag">PEN ${esc(a.penH)}–${esc(a.penA)}</span>`
+    : a.decidedBy === 'away-goals' ? '<span class="kb-tag">AWAY G.</span>'
+    : a.usedEt ? '<span class="kb-tag">AET</span>' : '';
+  return `<div class="kb-card${isFinal ? ' kb-final' : ''}${a.winnerId ? ' is-done' : ''}${live ? ' is-live' : ''}${attrs ? ' is-click' : ''}"
+    data-kb-id="${esc(m.id)}" ${dst ? `data-kb-to="${esc(dst.id)}" data-kb-side="${side}" data-kb-done="${a.winnerId ? 1 : 0}"` : ''}
+    style="--r:${r};--i:${pos}"${attrs}>
+    <div class="kb-inner">
+      ${isFinal ? '<span class="kb-badge">FINAL</span>' : ''}
+      ${kbTeamRow(t, m.homeId, hs, a.winnerId)}
+      ${kbTeamRow(t, m.awayId, as, a.winnerId)}
+      <div class="kb-foot"><span>${isFinal ? 'The Final' : 'Tie ' + (i + 1)}</span>${live ? '<span class="kb-live">● READY</span>' : tag}</div>
+    </div>
+  </div>`;
+}
+function kbTreeHTML(t){
+  const ko = t.knockouts;
+  const rounds = ko && ko.rounds;
+  if (!rounds || !rounds.length) return '';
+  const N = rounds.length;
+  const total = rounds.reduce((n, r) => n + r.length, 0);
+  const decided = rounds.reduce((n, r) => n + r.filter(m => matchWinner(m)).length, 0);
+  const pct = total ? Math.round(decided / total * 100) : 0;
+  const ch = champion(t);
+  const intro = !kbIntroSeen[t.id];
+  kbIntroSeen[t.id] = true;
+  const col = (r, list, offset, side) => `<div class="kb-col" style="--r:${r}">
+      <div class="kb-col-head"><span>${roundTitleFor(rounds[r].length)}</span></div>
+      <div class="kb-col-body">${list.map((m, k) => kbCardHTML(t, m, r, offset + k, offset + k, rounds, side)).join('')}</div>
+    </div>`;
+  const left = [], right = [];
+  for (let r = 0; r < N - 1; r++){
+    const half = rounds[r].length / 2;
+    left.push(col(r, rounds[r].slice(0, half), 0, 'L'));
+    right.unshift(col(r, rounds[r].slice(half), half, 'R'));
+  }
+  const fin = rounds[N - 1][0];
+  const center = `<div class="kb-col kb-col-final" style="--r:${N - 1}">
+      <div class="kb-col-head"><span>${roundTitleFor(1)}</span></div>
+      <div class="kb-col-body"><div class="kb-final-wrap">
+        ${kbCardHTML(t, fin, N - 1, 0, 0, rounds, 'C')}
+        ${ch ? `<div class="kb-champ"><span class="kb-crown">👑</span><b>${esc(teamName(t, ch))}</b><small>Champions</small></div>`
+             : '<div class="kb-champ kb-champ-wait"><span class="kb-crown">🏆</span><small>Champion decided here</small></div>'}
+      </div></div>
+    </div>`;
+  const perSide = Math.max(1, rounds[0].length / (N > 1 ? 2 : 1));
+  return `<section class="kb-stage${intro ? ' kb-intro' : ''}${ch ? ' kb-has-champ' : ''}">
+    <div class="kb-top">
+      <div class="kb-title">Bracket <small>${decided}/${total} ties decided</small></div>
+      <div class="kb-prog"><i style="width:${pct}%"></i></div>
+      <button type="button" class="btn small kb-replay" data-kb-replay="1">▶ Replay</button>
+    </div>
+    <div class="kb-scroll">
+      <div class="kb" style="--cols:${N * 2 - 1};--rows:${perSide}">
+        <svg class="kb-lines" aria-hidden="true"></svg>
+        ${left.join('')}${center}${right.join('')}
+      </div>
+    </div>
+    <p class="kb-hint">Hover a team to trace its run · click a finished tie for its match report · scroll sideways on small screens</p>
+  </section>`;
+}
+function kbPos(el, root){
+  let x = 0, y = 0, n = el;
+  while (n && n !== root){ x += n.offsetLeft; y += n.offsetTop; n = n.offsetParent; }
+  return { x, y, w: el.offsetWidth, h: el.offsetHeight };
+}
+function kbDraw(root){
+  const svg = root.querySelector('.kb-lines');
+  if (!svg) return;
+  const W = root.scrollWidth, H = root.offsetHeight;
+  svg.setAttribute('width', W); svg.setAttribute('height', H);
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+  const cards = {};
+  root.querySelectorAll('.kb-card').forEach(c => { cards[c.getAttribute('data-kb-id')] = c; });
+  let out = '';
+  root.querySelectorAll('.kb-card[data-kb-to]').forEach(c => {
+    const to = cards[c.getAttribute('data-kb-to')];
+    if (!to) return;
+    const a = kbPos(c, root), b = kbPos(to, root);
+    const side = c.getAttribute('data-kb-side');
+    const x1 = side === 'L' ? a.x + a.w : a.x;
+    const x2 = side === 'L' ? b.x : b.x + b.w;
+    const y1 = a.y + a.h / 2, y2 = b.y + b.h / 2, xm = (x1 + x2) / 2;
+    const d = `M${x1} ${y1} H${xm} V${y2} H${x2}`;
+    const done = c.getAttribute('data-kb-done') === '1';
+    const r = c.style.getPropertyValue('--r') || 0;
+    out += `<path class="kb-line${done ? ' is-done' : ''}" style="--r:${r}" pathLength="1" d="${d}"/>`;
+    if (done) out += `<path class="kb-flow" style="--r:${r}" pathLength="100" d="${d}"/>`;
+  });
+  svg.innerHTML = out;
+}
+let kbObserver = null;
+function kbInit(){
+  try {
+    const roots = document.querySelectorAll('.kb');
+    if (kbObserver){ kbObserver.disconnect(); kbObserver = null; }
+    if (!roots.length) return;
+    roots.forEach(kbDraw);
+    if (typeof ResizeObserver === 'function'){
+      kbObserver = new ResizeObserver(() => roots.forEach(kbDraw));
+      roots.forEach(r => kbObserver.observe(r));
+    }
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => roots.forEach(kbDraw));
+  } catch (e){ /* bracket lines are decorative */ }
+}
+window.addEventListener('resize', () => { document.querySelectorAll('.kb').forEach(kbDraw); });
+document.addEventListener('mouseover', e => {
+  const row = e.target && e.target.closest && e.target.closest('.kb-team[data-team]');
+  const root = e.target && e.target.closest && e.target.closest('.kb');
+  if (!root) return;
+  root.classList.remove('kb-following');
+  root.querySelectorAll('.kb-follow').forEach(x => x.classList.remove('kb-follow'));
+  root.querySelectorAll('.kb-has-follow').forEach(x => x.classList.remove('kb-has-follow'));
+  if (!row) return;
+  const id = row.getAttribute('data-team');
+  root.classList.add('kb-following');
+  root.querySelectorAll('.kb-team[data-team]').forEach(x => {
+    if (x.getAttribute('data-team') === id){ x.classList.add('kb-follow'); x.closest('.kb-card').classList.add('kb-has-follow'); }
+  });
+});
+document.addEventListener('mouseout', e => {
+  const root = e.target && e.target.closest && e.target.closest('.kb');
+  if (!root || (e.relatedTarget && root.contains(e.relatedTarget) && e.relatedTarget.closest('.kb-team[data-team]'))) return;
+  root.classList.remove('kb-following');
+  root.querySelectorAll('.kb-follow').forEach(x => x.classList.remove('kb-follow'));
+  root.querySelectorAll('.kb-has-follow').forEach(x => x.classList.remove('kb-has-follow'));
+});
+document.addEventListener('mousemove', e => {
+  const c = e.target && e.target.closest && e.target.closest('.kb-card');
+  if (!c) return;
+  const r = c.getBoundingClientRect();
+  c.style.setProperty('--mx', (e.clientX - r.left) + 'px');
+  c.style.setProperty('--my', (e.clientY - r.top) + 'px');
+});
+document.addEventListener('keydown', e => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target && e.target.classList && e.target.classList.contains('kb-card') && e.target.dataset.action){
+    e.preventDefault(); handle(e.target.dataset.action, e.target.dataset.id || null, e.target);
+  }
+});
+document.addEventListener('click', e => {
+  const b = e.target && e.target.closest && e.target.closest('[data-kb-replay]');
+  if (!b) return;
+  const stage = b.closest('.kb-stage');
+  if (!stage) return;
+  stage.classList.remove('kb-intro');
+  void stage.offsetWidth;
+  stage.classList.add('kb-intro');
+  const root = stage.querySelector('.kb');
+  if (root) kbDraw(root);
+});
+
 function knockoutsTabHTML(t){
   const ko = t.knockouts;
   if (!ko){
@@ -3832,6 +4002,8 @@ function knockoutsTabHTML(t){
     </div>` : `<div class="ko-rule-row ko-rule-readonly"><span class="ko-admin-label">Tie-break rules</span>
       <span class="chip">Away goals: ${rules.awayGoals ? 'on' : 'off'}</span>
       <span class="chip">Extra time: ${rules.extraTime ? 'on' : 'off'}</span></div>`}
+    ${kbTreeHTML(t)}
+    <div class="section-title kb-cards-title">Match cards <small>enter scores, set kickoffs and read results</small></div>
     <div class="ko-grid">
       ${rounds.map((matches, r) => `
         <div class="ko-round">
@@ -5575,6 +5747,7 @@ function render(){
   afterRender();
 }
 function afterRender(){
+  kbInit();
   // Count-up numbers: honour counters + XP levels. Skipped entirely for reduced-motion users.
   try {
     if (typeof requestAnimationFrame !== 'function' || typeof document.querySelectorAll !== 'function') return;
