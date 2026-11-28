@@ -10,7 +10,8 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
-const { signSession, verifySession, secret } = require('./lib/auth');
+const { signSession, verifySession, secret, isHeadUser } = require('./lib/auth');
+const { bootstrapAdmin } = require('./lib/handler');
 const { redisStorage } = require('./lib/storage');
 
 // Configure via env BEFORE requiring server.js so its start-time config picks this up.
@@ -131,6 +132,23 @@ function readWithTimeout(reader, ms){
     const expPayload = Buffer.from(JSON.stringify({ v: 1, u: 'x', n: 'X', e: Date.now() - 1000 })).toString('base64url');
     const expSig = crypto.createHmac('sha256', secret()).update(expPayload).digest('base64url');
     T('expired token rejected', verifySession(expPayload + '.' + expSig) === null);
+
+    // ---- legacy head records cannot be locked out of account management ----
+    const legacyDoc = { users: [
+      { username: 'tharana is the goat', display: 'Tharana is the Goat', role: 'admin', isHead: true, algo: 'scrypt', sessionVersion: 1 },
+      { username: 'old head', display: 'Old Head', role: 'head', algo: 'scrypt', sessionVersion: 1 }
+    ]};
+    const legacyStore = {
+      getUsers: async () => JSON.parse(JSON.stringify(legacyDoc)),
+      putUsers: async doc => { legacyDoc.users = doc.users; }
+    };
+    await bootstrapAdmin(legacyStore, '', '');
+    T('legacy built-in head is restored on upgrade',
+      legacyDoc.users[0].role === 'head' && legacyDoc.users[0].isHead === true);
+    T('extra legacy head is demoted so only one head remains',
+      legacyDoc.users[1].role === 'admin' && !legacyDoc.users[1].isHead);
+    T('fixed head username is always recognised as head',
+      isHeadUser({ username: 'THARANA IS THE GOAT', role: 'admin' }) === true);
 
     // ---- admins create admins ----
     r = await post('api/users', { username: 'sam', password: 'pass123', display: 'Sammy' }, tok);

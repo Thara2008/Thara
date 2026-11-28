@@ -60,6 +60,7 @@ function buildSandbox(opts){
     },
     localStorage: keyedStorage(),
     sessionStorage: keyedStorage(),
+    window: { addEventListener(){} },
     alert(){}, confirm: () => true, prompt: () => null,
     URL: { createObjectURL: () => '', revokeObjectURL(){} },
     FileReader: function(){}, Blob: function(){},

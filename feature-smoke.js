@@ -174,6 +174,7 @@ function buildSandbox(admin, empty){
     alert(msg){ alerts.push(String(msg)); },
     confirm(){ return true; },
     prompt(){ return ''; },
+    window: { addEventListener(){} },
     URL: { createObjectURL(){ return 'blob:test'; }, revokeObjectURL(){} },
     setTimeout,
     clearTimeout

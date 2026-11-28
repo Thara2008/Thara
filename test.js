@@ -289,6 +289,27 @@ const suite = `
   const advRows = computeTable(t16);
   T('advice independent of table count (16-team)', adviceFor(t16, advRows[0]).length > 0);
 
+  console.log('\\n[11b] Qualification badges wait for played games');
+  const qTournament = {
+    id: 'tq', name: 'Qualification Check', createdAt: 1,
+    groups: [{ id: 'gq', name: 'Group A', teams: [
+      { id: 'q1', name: 'Q1', note: '' }, { id: 'q2', name: 'Q2', note: '' }
+    ] }],
+    matches: [{ id: 'mq', groupId: 'gq', homeId: 'q1', awayId: 'q2', homeGoals: null, awayGoals: null }],
+    knockouts: { config: { counts: { gq: 1 }, wildcards: 0 }, rounds: [[{ id: 'kq', homeId: 'q1', awayId: 'q2' }]] }
+  };
+  const savedView = Object.assign({}, view);
+  view.groupId = 'gq';
+  const qBefore = tableTabHTML(qTournament);
+  T('group table does not mark qualifiers before any result',
+    !qBefore.includes('QUALIFY') && !qBefore.includes('qual-zone') && qBefore.includes('provisional'));
+  T('rankings do not mark knockout places before any result', !rankingsTabHTML(qTournament).includes('KNOCKOUTS'));
+  qTournament.matches[0].homeGoals = 2; qTournament.matches[0].awayGoals = 0;
+  const qAfter = tableTabHTML(qTournament);
+  T('group table marks qualifiers after the last result', qAfter.includes('QUALIFY') && qAfter.includes('qual-zone'));
+  T('rankings mark knockout places after the last result', rankingsTabHTML(qTournament).includes('KNOCKOUTS'));
+  view = savedView;
+
   console.log('\\n[12] Group wizard + two-leg knockouts');
   const opts = groupOptions(16, 8, false);
   T('groupOptions returns best-first valid plans', opts.length > 0 && opts[0].recommended === true &&

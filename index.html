@@ -3596,6 +3596,7 @@ function tableTabHTML(t){
   const sel = activeGroup(t);
   const rows = sel ? computeGroupTable(t, sel.id) : [];
   const qCount = sel ? qualifyCountFor(t, sel.id) : 0;
+  const decided = qualificationDecided(t);
   return `<div class="panel">
     <div class="group-bar">
       ${groups.map(g => `
@@ -3640,7 +3641,7 @@ function tableTabHTML(t){
               <tbody>
                 ${rows.map((r,i) => {
                   const posClass = i===0?'pos10':i===1?'pos11':i===2?'pos1b':'';
-                  const qual = rows.length > qCount && i < qCount;
+                  const qual = decided && rows.length > qCount && i < qCount;
                   return `<tr class="${qual?'qual-zone':''}">
                     <td class="pos ${posClass}">${r.rank}</td>
                     <td class="tname">${esc(r.team.name)} ${qual?'<span class="q-badge">QUALIFY</span>':''}</td>
@@ -3652,7 +3653,11 @@ function tableTabHTML(t){
               </tbody>
             </table>
           </div>`}
-      ${rows.length > qCount && t.knockouts ? `<p class="hint" style="margin-top:8px">🟢 Green rows = the top ${qCount} from this group qualify for the knockouts.</p>` : ''}
+      ${rows.length > qCount && t.knockouts
+        ? (decided
+            ? `<p class="hint" style="margin-top:8px">🟢 Green rows = the top ${qCount} from this group qualify for the knockouts.</p>`
+            : `<p class="hint" style="margin-top:8px">🟡 Qualification places are provisional until every group fixture has a result.</p>`)
+        : ''}
     </div>
     ${unlocked ? `
     <div class="group-manager">
@@ -5330,6 +5335,14 @@ function confettiHTML(n){
   }
   return out + '</div>';
 }
+/* Standings are only "decided" once every group fixture has a result. Until
+   then, showing QUALIFY rows would crown teams that have not played a game.
+   Direct-knockout tournaments have no group stage, so their bracket is final. */
+function qualificationDecided(t){
+  if (!t || !t.knockouts) return false;
+  if (t.knockouts.config && t.knockouts.config.direct) return true;
+  return groupStageComplete(t);
+}
 function qualifiedIds(t){
   const ids = new Set();
   if (t.knockouts && t.knockouts.rounds && t.knockouts.rounds.length){
@@ -5373,6 +5386,7 @@ function adviceFor(t, row){
 function rankingsTabHTML(t){
   const rows = computeTable(t);
   const q = qualifiedIds(t);
+  const decided = qualificationDecided(t);
   const ch = champion(t);
   return `<div class="panel">
     <div>
@@ -5385,7 +5399,7 @@ function rankingsTabHTML(t){
               <tbody>
                 ${rows.map((r, i) => `<tr class="${r.team.id === ch ? 'qual-zone' : ''}">
                   <td class="pos ${i===0?'pos10':i===1?'pos11':i===2?'pos1b':''}">${rankMedal(i)}</td>
-                  <td class="tname">${esc(r.team.name)} ${r.team.id === ch ? '👑' : ''} ${q.has(r.team.id) ? '<span class="q-badge">KNOCKOUTS</span>' : ''}</td>
+                  <td class="tname">${esc(r.team.name)} ${r.team.id === ch ? '👑' : ''} ${decided && q.has(r.team.id) ? '<span class="q-badge">KNOCKOUTS</span>' : ''}</td>
                   <td>${esc(groupOfTeam(t, r.team.id) ? groupOfTeam(t, r.team.id).name : '—')}</td>
                   <td>${r.p}</td><td>${r.w}</td><td>${r.d}</td><td>${r.l}</td>
                   <td>${r.gf}</td><td>${r.ga}</td><td>${r.gd>0?'+':''}${r.gd}</td><td class="pts-cell">${r.pts}</td>
