@@ -2408,6 +2408,79 @@ input:focus,select:focus,textarea:focus{
 }
 
 /* =========================================================
+   Fixture Planner — pick fixtures + a window, choose a plan
+   ========================================================= */
+.fixture-planner-launch{ margin-bottom:14px; }
+.fixture-planner{ border-color:rgba(116,217,165,.24); }
+.fixture-plan-builder{
+  padding:12px; border:1px solid rgba(140,202,242,.2); border-radius:var(--radius);
+  background:rgba(140,202,242,.045);
+}
+.fixture-plan-builder-form{
+  display:grid; grid-template-columns:minmax(180px,1fr) 150px auto; gap:10px; align-items:end;
+  margin:8px 0 10px;
+}
+.fixture-plan-builder-form .btn{ white-space:nowrap; }
+.fixture-plan-group{
+  padding:10px 11px; margin-top:8px; border:1px solid var(--line); border-radius:10px;
+  background:rgba(255,255,255,.02);
+}
+.fixture-plan-group-head{
+  display:flex; align-items:center; flex-wrap:wrap; gap:6px 10px;
+  padding-bottom:7px; margin-bottom:7px; border-bottom:1px solid var(--line);
+}
+.fixture-plan-group-head strong{ font-size:12.5px; }
+.fixture-plan-group-head span{ color:var(--dim); font-size:11px; margin-right:auto; }
+.fixture-plan-rows{ display:flex; flex-direction:column; gap:6px; }
+.fixture-plan-row{
+  display:grid; grid-template-columns:28px minmax(0,1fr) auto minmax(0,1fr); gap:8px; align-items:end;
+}
+.fixture-plan-row-no{ align-self:center; color:var(--dim); font-size:11px; font-weight:700; }
+.fixture-plan-row label{ display:flex; flex-direction:column; gap:3px; font-size:10.5px; color:var(--dim); }
+.fixture-plan-row .fixture-vs{ align-self:center; color:var(--dim); font-size:11px; }
+.fixture-plan-picks{
+  display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:8px;
+  max-height:340px; overflow:auto; padding:2px; overscroll-behavior:contain; scrollbar-width:thin;
+}
+.fixture-plan-pick{
+  display:flex; align-items:flex-start; gap:9px; padding:10px 11px;
+  border:1px solid var(--line); border-radius:10px; background:rgba(255,255,255,.02);
+  color:var(--txt); font-size:12.5px; line-height:1.35; cursor:pointer;
+  transition:border-color .16s ease, background-color .16s ease;
+}
+.fixture-plan-pick input{ flex:0 0 auto; width:auto; margin-top:2px; padding:0; accent-color:var(--gold); }
+.fixture-plan-pick strong{ display:block; font-weight:600; }
+.fixture-plan-pick small{ display:block; margin-top:2px; color:var(--dim); font-size:10.5px; }
+.fixture-plan-pick.selected{ border-color:rgba(116,217,165,.4); background:rgba(116,217,165,.07); }
+.fixture-plan-preview{ display:flex; flex-direction:column; gap:10px; }
+.plan-slot{
+  display:grid; grid-template-columns:minmax(140px,180px) 1fr; gap:12px;
+  padding:11px 13px; border:1px solid rgba(116,217,165,.22); border-radius:12px;
+  background:rgba(116,217,165,.045);
+}
+.plan-slot-time{ color:var(--green); font-size:12px; font-weight:700; }
+.plan-slot-matches{ display:flex; flex-direction:column; gap:6px; }
+.fixture-plan-match{
+  display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:4px 12px;
+  padding:6px 8px; border:1px solid var(--line); border-radius:8px; background:rgba(255,255,255,.025);
+}
+.fixture-plan-match strong{ font-size:12.5px; }
+.fixture-plan-match small{ color:var(--dim); font-size:10.5px; }
+@media (hover:hover){
+  .fixture-plan-pick:hover{ border-color:var(--line-strong); background:rgba(255,255,255,.05); }
+}
+@media (max-width:720px){
+  .fixture-plan-picks{ grid-template-columns:1fr; max-height:none; }
+  .fixture-plan-builder-form{ grid-template-columns:1fr; align-items:stretch; }
+  .fixture-plan-row{ grid-template-columns:24px minmax(0,1fr) auto minmax(0,1fr); gap:5px; }
+  .plan-slot{ grid-template-columns:1fr; gap:7px; }
+}
+@media (max-width:480px){
+  .fixture-plan-row{ grid-template-columns:1fr; }
+  .fixture-plan-row-no, .fixture-plan-row .fixture-vs{ display:none; }
+}
+
+/* =========================================================
    Tournament registration (public tab + popup) and the
    admin hand-off into the group/knockout wizard.
    ========================================================= */

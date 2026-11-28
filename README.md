@@ -13,7 +13,7 @@ with **per-admin accounts**, an **admin-only change feed**, and **real-time upda
 | 🏠 **Home** | Hero + season, announcement banner, next fixtures, latest news, honours, open poll and Player of the Month |
 | 🏆 **League** | The full tournament manager — groups, tables, rankings, matches and knockouts |
 | 📝 **Reg** | Pick a tournament and register a team (Name, Username, UID); admins can hand sign-ups to the wizard |
-| 📅 **Fixtures** | Every upcoming tie and recorded result, kickoff times in the visitor's local time zone, `.ics` calendar downloads and match reports |
+| 📅 **Fixtures** | Every upcoming tie and recorded result, kickoff times in the visitor's local time zone, `.ics` calendar downloads, match reports and an admin-only Fixture Planner |
 | 📰 **News** | Club stories, match reports, announcements, transfers and interviews with categories, cover images and share links |
 | 🎮 **Fan Zone** | Predictions, one-vote MOTM, fantasy Team of the Week and public polls |
 | 👟 **Players** | Player profiles with XP, levels, automatic/manual badges and season stats |
@@ -126,6 +126,19 @@ Storage details:
   wizard jumps to the Knockout step, marks the group steps as skipped, and Lock creates a filled
   bracket with no groups or group fixtures. This needs a bracket-sized field (2, 4, 8, 16, 32 or 64
   teams); marked seeds get protected slots. **Use group stage instead** switches back at any time.
+
+### 🗓️ Fixture Planner (admin only)
+- On the **Fixtures** tab, press **Plan fixtures**. The wizard runs **Window → Matches → Plans → Preview**.
+- Enter a local-time start/end, how many matches to schedule, and optionally include fixtures that
+  already have a kickoff. Then pick the exact group or knockout ties to consider.
+- Admins can also **add new group fixtures** in the Matches step: choose the tournament/group, set
+  how many matches that group needs, and edit the home/away pair for every row. New fixtures appear
+  in the pick list marked **New** and are created only when Apply is pressed.
+- The app recommends **Balanced evenings**, **Weekend block** and **Fastest turnaround** plans, with
+  the best fit marked **Recommended**. Plans avoid giving one team two matches at the same time and
+  respect each strategy's rest gap; plans that cannot fit are marked **Too tight**.
+- Preview the proposed kickoff slots, choose one plan, then press **Apply these kickoff times**.
+  Nothing is saved until Apply; other fixtures are left untouched.
 
 ### World Cup–style groups
 - Every tournament starts with a **Group A**; add as many as needed (B, C, D, …) — auto-named.

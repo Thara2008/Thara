@@ -310,6 +310,9 @@ function runFeatures(){
     has('Upcoming fixtures') && has('Lions') && has('Eagles') && has('Results'));
   T('fixtures page links every result to a match report',
     has('data-action="open-match"') && has('data-id="t1:g:m1"') && has('data-id="t1:k:k1"'));
+  if (!unlocked){
+    T('fixtures planner hidden from visitors', !has('data-action="fixtures-planner-open"'));
+  }
   const ics = buildMatchICS(findMatchMeta('t1:g:m2'));
   T('calendar export contains a UTC event with both teams',
     ics.indexOf('BEGIN:VCALENDAR') === 0 && ics.indexOf('DTSTART:') !== -1 &&
@@ -422,6 +425,48 @@ function runFeatures(){
     T('signed-in admin sees the change feed', has('Recent changes'));
 
     go('fixtures');
+    T('admin fixtures planner launch is available', has('Fixture Planner') && has('data-action="fixtures-planner-open"'));
+    handle('fixtures-planner-open');
+    T('fixture planner opens on the window step',
+      fixturePlannerOpen === true && fixturePlannerStep === 1 && has('id="fpStart"') && has('id="fpEnd"') && has('id="fpCount"'));
+    fill('fpStart', '2099-05-01T18:00');
+    fill('fpEnd', '2099-05-02T23:00');
+    fill('fpCount', '2');
+    check('fpIncludeScheduled', true);
+    handle('fixtures-planner-next');
+    T('fixture planner lists the fixtures to choose from',
+      fixturePlannerStep === 2 && has('data-fp-match="t1:g:m2"') && has('data-fp-match="t1:g:m3"'));
+    T('fixture planner offers a group builder with groups and match counts',
+      has('data-fp-new-group') && has('data-fp-new-count') && has('data-action="fixtures-planner-add-group"'));
+    fill('fpNewGroup', 't1|ga');
+    fill('fpNewCount', '1');
+    handle('fixtures-planner-add-group');
+    T('admin adds a group, a match count and the playing pair',
+      fixturePlannerDraft.newGroups.length === 1 &&
+      fixturePlannerDraft.newGroups[0].count === 1 &&
+      fixturePlannerDraft.newGroups[0].rows[0].homeId === 'a1' &&
+      fixturePlannerDraft.newGroups[0].rows[0].awayId === 'a2' &&
+      has('data-fp-fixture="0:0:home"') && has('data-fp-fixture="0:0:away"'));
+    handle('fixtures-planner-select-all');
+    handle('fixtures-planner-next');
+    T('fixture planner recommends a best-first plan set',
+      fixturePlannerStep === 3 && has('Recommended') &&
+      fixturePlannerDraft.options.length >= 1 &&
+      fixturePlannerDraft.options.filter(o => o.recommended).length === 1);
+    const fpBest = fixturePlannerDraft.options.find(o => o.recommended);
+    handle('fixtures-planner-option', fpBest.id);
+    handle('fixtures-planner-next');
+    T('fixture planner previews the chosen kickoff slots',
+      fixturePlannerStep === 4 && has('🕒') && has('data-action="fixtures-planner-apply"'));
+    handle('fixtures-planner-apply');
+    T('fixture planner applies only the chosen fixtures',
+      fixturePlannerOpen === false && fixturePlannerDraft === null &&
+      !!findMatchMeta('t1:g:m2').m.kickoff && !!findMatchMeta('t1:g:m3').m.kickoff &&
+      findMatchMeta('t1:g:m2').m.kickoff !== findMatchMeta('t1:g:m3').m.kickoff);
+    const fpCreated = state.tournaments[0].matches.filter(m =>
+      m.groupId === 'ga' && m.homeId === 'a1' && m.awayId === 'a2' && m.homeGoals == null);
+    T('fixture planner creates the staged group match with its kickoff',
+      fpCreated.length === 1 && !!fpCreated[0].kickoff && fpCreated[0].groupId === 'ga');
     fill('kickoff-t1:g:m2', '2099-04-05T18:30');
     handle('save-kickoff', 't1:g:m2');
     T('admin kickoff save updates the match', !!findMatchMeta('t1:g:m2').m.kickoff);

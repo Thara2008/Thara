@@ -204,6 +204,13 @@ let groupWizardTimer = null;
 let groupWizardDragId = '';
 let groupWizardPickId = '';
 
+/* Fixture Planner (admin only): admin sets a window, a match count and the
+   fixtures to consider; the app proposes conflict-free schedules to choose from. */
+let fixturePlannerOpen = false;
+let fixturePlannerStep = 1;
+let fixturePlannerDraft = null;
+let fixturePlannerError = '';
+
 /* ================= SITE / ROUTING HELPERS ================= */
 const HONOUR_DEFAULTS = [
   { id: 'hc_titles',  label: 'Titles won',            value: 0, icon: '🏆', note: 'Ceylon FC champions crowned' },
@@ -1753,6 +1760,428 @@ function kickoffEditorRowHTML(f){
     <button type="button" class="btn small" data-action="save-kickoff" data-id="${esc(f.key)}">Save time</button>
   </div>`;
 }
+/* ---------- Fixture Planner: admin picks fixtures + window, app plans slots ---------- */
+function fixturePlannerDefaultDates(){
+  const s = new Date(Date.now() + 3600000);
+  const e = new Date(s.getTime() + 7 * 86400000);
+  return { start: isoToLocalInput(s.toISOString()), end: isoToLocalInput(e.toISOString()) };
+}
+function fixturePlannerBlank(){
+  const dates = fixturePlannerDefaultDates();
+  const groups = fixturePlannerAllGroups();
+  return { start: dates.start, end: dates.end, count: 6, includeScheduled: false,
+           newGroupPick: groups.length ? groups[0].key : '', newCount: 1, newGroups: [],
+           selected: [], options: [], optionId: '' };
+}
+function fixturePlannerAllGroups(){
+  const out = [];
+  state.tournaments.forEach(t => {
+    groupsOf(t).forEach(g => out.push({ key: String(t.id) + '|' + String(g.id), t, g }));
+  });
+  return out;
+}
+function fixturePlannerGroupByKey(key){
+  const parts = String(key || '').split('|');
+  const t = findTournament(parts[0]);
+  if (!t) return null;
+  const g = findGroup(t, parts.slice(1).join('|'));
+  return g ? { t, g } : null;
+}
+function fixturePlannerStagedFixtures(){
+  const d = fixturePlannerDraft;
+  if (!d || !Array.isArray(d.newGroups)) return [];
+  const out = [];
+  d.newGroups.forEach((block, bi) => {
+    const picked = fixturePlannerGroupByKey(String(block.tournamentId) + '|' + String(block.groupId));
+    if (!picked) return;
+    (block.rows || []).forEach((row, ri) => {
+      if (!row || !row.homeId || !row.awayId || row.homeId === row.awayId) return;
+      const home = teamById(picked.t, row.homeId), away = teamById(picked.t, row.awayId);
+      if (!home || !away) return;
+      out.push({
+        key: 'fpnew:' + bi + ':' + ri, custom: true, blockIndex: bi, rowIndex: ri,
+        t: picked.t, g: picked.g, kind: 'g',
+        m: { id: '', groupId: picked.g.id, homeId: row.homeId, awayId: row.awayId,
+             homeGoals: null, awayGoals: null, kickoff: '' },
+        round: picked.g.name, roundIdx: 0,
+        homeId: row.homeId, awayId: row.awayId, home: home.name, away: away.name,
+        kickoff: '', finished: false, createdAt: Number(picked.t.createdAt) || 0
+      });
+    });
+  });
+  return out;
+}
+function fixturePlannerPool(){
+  const d = fixturePlannerDraft;
+  const includeScheduled = !!(d && d.includeScheduled);
+  return fixturePlannerStagedFixtures().concat(upcomingMatches()
+    .filter(f => includeScheduled || !kickoffMs(f.m)))
+    .slice()
+    .sort((a, b) => {
+      const ca = a.custom ? -1 : 0, cb = b.custom ? -1 : 0;
+      const sa = kickoffMs(a.m) ? 1 : 0, sb = kickoffMs(b.m) ? 1 : 0;
+      return ca - cb || sa - sb || a.roundIdx - b.roundIdx
+        || String(a.t.name).localeCompare(String(b.t.name))
+        || String(a.home).localeCompare(String(b.home))
+        || String(a.key).localeCompare(String(b.key));
+    });
+}
+function fixturePlannerCapture(){
+  const d = fixturePlannerDraft;
+  if (!d) return;
+  const get = id => { try { return document.getElementById(id); } catch (e){ return null; } };
+  const start = get('fpStart'); if (start && start.value) d.start = start.value;
+  const end = get('fpEnd'); if (end && end.value) d.end = end.value;
+  const count = get('fpCount'); if (count) d.count = Math.max(1, Math.min(100, Number(count.value) || d.count));
+  const include = get('fpIncludeScheduled'); if (include) d.includeScheduled = !!include.checked;
+  const groupPick = get('fpNewGroup'); if (groupPick && groupPick.value) d.newGroupPick = groupPick.value;
+  const newCount = get('fpNewCount'); if (newCount) d.newCount = Math.max(1, Math.min(20, Number(newCount.value) || d.newCount || 1));
+  try {
+    const picks = document.querySelectorAll('[data-fp-fixture]') || [];
+    for (let i = 0; i < picks.length; i++){
+      const el = picks[i];
+      const spec = String(el && el.getAttribute ? el.getAttribute('data-fp-fixture') : '').split(':');
+      if (spec.length !== 3) continue;
+      const block = d.newGroups[Number(spec[0])];
+      const row = block && block.rows[Number(spec[1])];
+      if (row && (spec[2] === 'home' || spec[2] === 'away')) row[spec[2]] = el.value || '';
+    }
+  } catch (e){ /* keep staged pairs if the DOM is unavailable */ }
+  try {
+    const boxes = document.querySelectorAll('[data-fp-match]') || [];
+    if (boxes.length){
+      const picked = [];
+      for (let i = 0; i < boxes.length; i++){
+        const box = boxes[i];
+        const key = box.getAttribute ? box.getAttribute('data-fp-match') : (box.dataset ? box.dataset.fpMatch : '');
+        if (key && box.checked) picked.push(key);
+      }
+      d.selected = picked;
+    }
+  } catch (e){ /* keep the last good selection if the DOM is unavailable */ }
+}
+function fixturePlanSlots(strategy, startTs, endTs){
+  const out = [];
+  const firstDay = new Date(startTs); firstDay.setHours(0, 0, 0, 0);
+  for (let base = firstDay.getTime(); base <= endTs && out.length < 600; base += 86400000){
+    const day = new Date(base);
+    if (strategy.days && strategy.days.indexOf(day.getDay()) === -1) continue;
+    if (strategy.hours){
+      strategy.hours.forEach(hour => {
+        const dt = new Date(base); dt.setHours(hour, 0, 0, 0);
+        if (dt.getTime() >= startTs && dt.getTime() <= endTs) out.push(dt.getTime());
+      });
+    } else {
+      for (let mins = 0; mins < 1440; mins += strategy.interval){
+        const dt = new Date(base); dt.setHours(0, mins, 0, 0);
+        if (dt.getTime() >= startTs && dt.getTime() <= endTs) out.push(dt.getTime());
+      }
+    }
+  }
+  return out.sort((a, b) => a - b);
+}
+function fixturePlanAssign(pool, target, slots, restMs){
+  const schedule = [];
+  const lastByTeam = {};
+  const teamsBySlot = slots.map(() => []);
+  const ordered = pool.slice().sort((a, b) => {
+    const sa = kickoffMs(a.m) ? 1 : 0, sb = kickoffMs(b.m) ? 1 : 0;
+    return sa - sb || a.roundIdx - b.roundIdx
+      || String(a.home).localeCompare(String(b.home))
+      || String(a.key).localeCompare(String(b.key));
+  });
+  for (let p = 0; p < ordered.length && schedule.length < target; p++){
+    const f = ordered[p];
+    const teams = [f.homeId, f.awayId].filter(Boolean);
+    for (let i = 0; i < slots.length; i++){
+      const ts = slots[i];
+      const busy = teams.some(id => {
+        const last = lastByTeam[id];
+        if (last != null && ts - last < restMs) return true;
+        return teamsBySlot[i].indexOf(id) !== -1;
+      });
+      if (busy) continue;
+      schedule.push({
+        key: f.key, keys: [f.key], slotIndex: i, iso: new Date(ts).toISOString(),
+        home: f.home, away: f.away, round: f.round, tournament: f.t.name
+      });
+      teams.forEach(id => { lastByTeam[id] = ts; teamsBySlot[i].push(id); });
+      break;
+    }
+  }
+  return { schedule: schedule, shortfall: Math.max(0, target - schedule.length) };
+}
+function fixturePlanOptions(){
+  const d = fixturePlannerDraft;
+  if (!d) return [];
+  const startTs = Date.parse(localInputToIso(d.start));
+  const endTs = Date.parse(localInputToIso(d.end));
+  if (!Number.isFinite(startTs) || !Number.isFinite(endTs) || endTs <= startTs) return [];
+  const keys = (d.selected || []).slice();
+  const pool = fixturePlannerPool().filter(f => keys.indexOf(f.key) !== -1);
+  const target = Math.max(1, Math.min(Number(d.count) || 0, pool.length));
+  const strategies = [
+    { id: 'balanced', title: 'Balanced evenings', interval: 120, rest: 120, hours: [18, 20], days: null,
+      tags: ['2h rest between games', 'evening kick-offs', 'spread across days'],
+      note: 'Evening slots with a two-hour gap for every team — the safest plan for players.' },
+    { id: 'weekend', title: 'Weekend block', interval: 120, rest: 180, hours: [14, 16, 18, 20], days: [0, 6],
+      tags: ['3h rest between games', 'Saturday + Sunday', 'afternoon / evening'],
+      note: 'Keeps matchday to the weekend and gives each team a longer recovery window.' },
+    { id: 'compact', title: 'Fastest turnaround', interval: 90, rest: 90, hours: null, days: null,
+      tags: ['90 minute slots', 'any day', 'shortest window'],
+      note: 'Fits the fixtures into the smallest span, with a 90-minute turnaround per team.' }
+  ];
+  const options = strategies.map(s => {
+    const slots = fixturePlanSlots(s, startTs, endTs);
+    const result = fixturePlanAssign(pool, target, slots, s.rest * 60000);
+    const used = result.schedule.map(x => x.slotIndex);
+    const distinct = used.length ? new Set(used).size : 0;
+    const first = used.length ? slots[Math.min.apply(null, used)] : startTs;
+    const last = used.length ? slots[Math.max.apply(null, used)] : startTs;
+    const offHours = s.hours
+      ? result.schedule.filter(x => s.hours.indexOf(new Date(slots[x.slotIndex]).getHours()) === -1).length
+      : 0;
+    return {
+      id: 'fp-' + s.id, title: s.title, tags: s.tags.slice(), note: s.note, rest: s.rest,
+      schedule: result.schedule, shortfall: result.shortfall, fits: result.shortfall === 0,
+      slotsUsed: distinct,
+      spanHours: Math.round((last - first) / 3600000 * 10) / 10,
+      score: result.shortfall * 1000000 + distinct * 12 + offHours * 40 + (last - first) / 3600000
+    };
+  });
+  options.sort((a, b) => a.score - b.score);
+  options.forEach((o, i) => { o.recommended = i === 0 && o.fits; });
+  return options;
+}
+function fixturePlannerAddGroup(){
+  const d = fixturePlannerDraft;
+  if (!d) return false;
+  fixturePlannerCapture();
+  const picked = fixturePlannerGroupByKey(d.newGroupPick);
+  if (!picked){ fixturePlannerError = 'Choose a group before adding fixtures.'; render(); return false; }
+  const teams = picked.g.teams || [];
+  if (teams.length < 2){ fixturePlannerError = 'Add at least two teams to this group first.'; render(); return false; }
+  const count = Math.max(1, Math.min(20, Number(d.newCount) || 1));
+  const rows = [];
+  for (let i = 0; i < count; i++){
+    rows.push({ homeId: teams[(i * 2) % teams.length].id, awayId: teams[(i * 2 + 1) % teams.length].id });
+  }
+  d.newGroups.push({ tournamentId: picked.t.id, groupId: picked.g.id, count, rows });
+  fixturePlannerError = '';
+  render();
+  return true;
+}
+function fixturePlannerRemoveGroup(index){
+  const d = fixturePlannerDraft;
+  if (!d || !d.newGroups[index]) return;
+  fixturePlannerCapture();
+  d.newGroups.splice(index, 1);
+  d.selected = (d.selected || []).map(key => {
+    const m = /^fpnew:(\d+):(\d+)$/.exec(String(key));
+    if (!m) return key;
+    const bi = Number(m[1]);
+    if (bi === index) return '';
+    return bi > index ? 'fpnew:' + (bi - 1) + ':' + m[2] : key;
+  }).filter(Boolean);
+  fixturePlannerError = '';
+  render();
+}
+function fixturePlannerBuilderHTML(d){
+  const groups = fixturePlannerAllGroups();
+  const options = groups.length
+    ? groups.map(x => `<option value="${esc(x.key)}" ${d.newGroupPick === x.key ? 'selected' : ''}>${esc(x.t.name)} · ${esc(x.g.name)}</option>`).join('')
+    : '<option value="">No groups yet — add teams in League first</option>';
+  const blocks = (d.newGroups || []).map((block, bi) => {
+    const picked = fixturePlannerGroupByKey(String(block.tournamentId) + '|' + String(block.groupId));
+    if (!picked) return '';
+    const teams = picked.g.teams || [];
+    const teamOptions = selected => teams.map(team =>
+      `<option value="${esc(team.id)}" ${selected === team.id ? 'selected' : ''}>${esc(team.name)}</option>`).join('');
+    return `<div class="fixture-plan-group">
+      <div class="fixture-plan-group-head">
+        <strong>${esc(picked.t.name)} · ${esc(picked.g.name)}</strong>
+        <span>${(block.rows || []).length} match${(block.rows || []).length === 1 ? '' : 'es'}</span>
+        <button type="button" class="btn ghost small" data-action="fixtures-planner-remove-group" data-id="${bi}">Remove group</button>
+      </div>
+      <div class="fixture-plan-rows">${(block.rows || []).map((row, ri) => `
+        <div class="fixture-plan-row">
+          <span class="fixture-plan-row-no">#${ri + 1}</span>
+          <label>Home <select data-fp-fixture="${bi}:${ri}:home">${teamOptions(row.homeId)}</select></label>
+          <span class="fixture-vs">vs</span>
+          <label>Away <select data-fp-fixture="${bi}:${ri}:away">${teamOptions(row.awayId)}</select></label>
+        </div>`).join('')}</div>
+    </div>`;
+  }).join('');
+  return `<div class="fixture-plan-builder">
+    <div class="section-title small-title">Add new group fixtures <small>group · match count · who plays</small></div>
+    <div class="fixture-plan-builder-form">
+      <label class="wizard-label">Group
+        <select id="fpNewGroup" data-fp-new-group>${options}</select>
+      </label>
+      <label class="wizard-label">Matches for this group
+        <input id="fpNewCount" data-fp-new-count type="number" min="1" max="20" value="${num(d.newCount, 1, 20, 1)}">
+      </label>
+      <button type="button" class="btn" data-action="fixtures-planner-add-group">＋ Add group matches</button>
+    </div>
+    ${blocks || '<p class="hint">No new group fixtures staged yet. Choose a group and a count, then add them — each pair can be changed below.</p>'}
+  </div>`;
+}
+function fixturePlannerMatchesHTML(d){
+  const pool = fixturePlannerPool();
+  if (!pool.length){
+    return `<div class="empty-box compact">No fixtures to schedule yet. Add new group fixtures above, or create a knockout bracket first.</div>`;
+  }
+  return `<div class="fixture-plan-picks">${pool.map(f => {
+    const checked = (d.selected || []).indexOf(f.key) !== -1;
+    const when = kickoffMs(f.m) ? ' · ' + esc(localDateTime(f.m.kickoff)) : '';
+    const badge = f.custom ? '<span class="chip">New</span> ' : '';
+    return `<label class="fixture-plan-pick ${checked ? 'selected' : ''}">
+      <input type="checkbox" data-fp-match="${esc(f.key)}" ${checked ? 'checked' : ''}>
+      <span><strong>${esc(f.home)} <span class="fixture-vs">vs</span> ${esc(f.away)}</strong>
+        <small>${badge}${esc(f.t.name)} · ${esc(f.round)}${when}</small></span>
+    </label>`;
+  }).join('')}</div>`;
+}
+function fixturePlannerCardsHTML(d){
+  if (!d.options.length){
+    return `<div class="empty-box compact">No plan fits this window. Widen the time period, lower the match count or pick fewer clashing fixtures.</div>`;
+  }
+  return `<div class="break-options">${d.options.map(o => `
+    <button type="button" class="break-card ${d.optionId === o.id ? 'selected' : ''}" data-action="fixtures-planner-option" data-id="${esc(o.id)}" ${o.fits ? '' : 'disabled'}>
+      <div class="break-title">${esc(o.title)}${o.recommended ? '<span class="break-rec">Recommended</span>' : ''}${o.fits ? '' : '<span class="verdict-tag danger">Too tight</span>'}</div>
+      <div class="break-stats">
+        <span><b>${o.schedule.length}</b> of ${Math.max(1, Number(d.count) || 0)} matches</span>
+        <span><b>${o.slotsUsed}</b> time slots</span>
+        <span><b>${o.spanHours}h</b> span</span>
+      </div>
+      <div class="break-tags">${o.tags.map(tag => `<span class="chip">${esc(tag)}</span>`).join('')}</div>
+      <p class="break-note">${esc(o.note)}${o.fits ? '' : ' This plan cannot fit every match — choose another or widen the window.'}</p>
+    </button>`).join('')}</div>`;
+}
+function fixturePlannerPreviewHTML(d, opt){
+  if (!opt) return `<div class="empty-box compact">Pick a plan to see the proposed kickoff times.</div>`;
+  const groups = [];
+  opt.schedule.forEach(item => {
+    let slot = groups.find(g => g.iso === item.iso);
+    if (!slot){ slot = { iso: item.iso, items: [] }; groups.push(slot); }
+    slot.items.push(item);
+  });
+  if (!groups.length) return `<div class="empty-box compact">No matches could be placed in this window.</div>`;
+  return `<div class="fixture-plan-preview">${groups.map(slot => `
+    <div class="plan-slot">
+      <div class="plan-slot-time">🕒 ${esc(localDateTime(slot.iso))}</div>
+      <div class="plan-slot-matches">${slot.items.map(item => `
+        <div class="fixture-plan-match">
+          <strong>${esc(item.home)} <span class="fixture-vs">vs</span> ${esc(item.away)}</strong>
+          <small>${esc(item.tournament)} · ${esc(item.round)}</small>
+        </div>`).join('')}</div>
+    </div>`).join('')}</div>
+    <p class="hint">Applying replaces the kickoff time for these fixtures. Other fixtures are left untouched.</p>`;
+}
+function fixturePlannerHTML(){
+  if (!fixturePlannerOpen || !unlocked) return '';
+  const d = fixturePlannerDraft || (fixturePlannerDraft = fixturePlannerBlank());
+  const steps = ['Window', 'Matches', 'Plans', 'Preview'];
+  const step = Math.max(1, Math.min(4, fixturePlannerStep || 1));
+  const chosen = d.options.find(o => o.id === d.optionId) || null;
+  return `<section class="panel group-wizard fixture-planner">
+    <div class="wizard-head">
+      <div><div class="section-title">🗓️ Fixture Planner <small>admin only · nothing is saved until Apply</small></div>
+      <p class="hint">Give the app a window, a match count and the fixtures to consider — or add new group fixtures. It will propose conflict-free plans for you to choose.</p></div>
+      <button type="button" class="btn ghost small" data-action="fixtures-planner-close">Close</button>
+    </div>
+    <div class="wizard-steps">${steps.map((s, i) => {
+      const n = i + 1;
+      return `<span class="${step === n ? 'active' : step > n ? 'done' : ''}"><b>${n}</b>${esc(s)}</span>`;
+    }).join('')}</div>
+    ${fixturePlannerError ? `<div class="wizard-error">⚠️ ${esc(fixturePlannerError)}</div>` : ''}
+
+    ${step === 1 ? `<div class="wizard-body">
+      <div class="wizard-choice-grid">
+        <label class="wizard-label">From
+          <input id="fpStart" type="datetime-local" value="${esc(d.start)}">
+        </label>
+        <label class="wizard-label">Until
+          <input id="fpEnd" type="datetime-local" value="${esc(d.end)}">
+        </label>
+      </div>
+      <label class="wizard-label">Matches to schedule
+        <input id="fpCount" type="number" min="1" max="100" value="${num(d.count, 1, 100, 6)}">
+      </label>
+      <label class="wizard-seed"><input id="fpIncludeScheduled" type="checkbox" ${d.includeScheduled ? 'checked' : ''}> Include fixtures that already have a kickoff</label>
+      <p class="hint">Times are entered in your local time zone and shown the same way to visitors. Plans avoid giving one team two matches at once.</p>
+      <div class="wizard-actions"><button type="button" class="btn primary" data-action="fixtures-planner-next">Next: pick matches</button></div>
+    </div>` : ''}
+
+    ${step === 2 ? `<div class="wizard-body">
+      ${fixturePlannerBuilderHTML(d)}
+      <div class="section-title small-title">Which matches? <small>${(d.selected || []).length} selected · the plan will schedule ${num(d.count, 1, 100, 6)}</small></div>
+      <p class="hint">Pick at least as many fixtures as the match count. New group fixtures are created only when you Apply; existing fixtures just get new kickoff times.</p>
+      ${fixturePlannerMatchesHTML(d)}
+      <div class="wizard-actions">
+        <button type="button" class="btn ghost" data-action="fixtures-planner-back">Back</button>
+        <button type="button" class="btn" data-action="fixtures-planner-select-all">Select all unscheduled</button>
+        <button type="button" class="btn ghost" data-action="fixtures-planner-clear">Clear picks</button>
+        <button type="button" class="btn primary" data-action="fixtures-planner-next">Next: recommendations</button>
+      </div>
+    </div>` : ''}
+
+    ${step === 3 ? `<div class="wizard-body">
+      <div class="section-title small-title">Recommended plans <small>best first · pick one to preview</small></div>
+      ${fixturePlannerCardsHTML(d)}
+      <div class="wizard-actions">
+        <button type="button" class="btn ghost" data-action="fixtures-planner-back">Back</button>
+        <button type="button" class="btn primary" data-action="fixtures-planner-next" ${chosen && chosen.fits ? '' : 'disabled'}>Next: preview</button>
+      </div>
+    </div>` : ''}
+
+    ${step === 4 ? `<div class="wizard-body">
+      <div class="section-title small-title">Preview &amp; apply <small>${chosen ? esc(chosen.title) : ''}</small></div>
+      ${fixturePlannerPreviewHTML(d, chosen)}
+      <div class="wizard-actions">
+        <button type="button" class="btn ghost" data-action="fixtures-planner-back">Back</button>
+        <button type="button" class="btn primary" data-action="fixtures-planner-apply" ${chosen && chosen.fits ? '' : 'disabled'}>✅ Apply these kickoff times</button>
+      </div>
+    </div>` : ''}
+  </section>`;
+}
+function fixturePlannerApply(){
+  const d = fixturePlannerDraft;
+  const opt = d && d.options.find(o => o.id === d.optionId);
+  if (!opt || !opt.fits){
+    fixturePlannerError = 'Choose a plan that fits every selected match.';
+    render(); return false;
+  }
+  let written = 0, created = 0;
+  opt.schedule.forEach(slot => {
+    (slot.keys || [slot.key]).forEach(key => {
+      const custom = /^fpnew:(\d+):(\d+)$/.exec(String(key));
+      if (custom){
+        const block = d.newGroups[Number(custom[1])];
+        const row = block && block.rows[Number(custom[2])];
+        const t = block && findTournament(block.tournamentId);
+        const g = t && findGroup(t, block.groupId);
+        if (row && t && g && row.homeId && row.awayId && row.homeId !== row.awayId){
+          t.matches = Array.isArray(t.matches) ? t.matches : [];
+          t.matches.push(stripGroupLegs({ id: uid('m'), groupId: g.id,
+            homeId: row.homeId, awayId: row.awayId,
+            homeGoals: null, awayGoals: null, kickoff: slot.iso }));
+          written++; created++;
+        }
+        return;
+      }
+      const meta = findMatchMeta(key);
+      if (meta){ meta.m.kickoff = slot.iso; written++; }
+    });
+  });
+  fixturePlannerOpen = false; fixturePlannerDraft = null; fixturePlannerError = '';
+  flash = '📅 ' + written + ' fixture' + (written === 1 ? '' : 's') + ' scheduled with the Fixture Planner'
+    + (created ? ' — ' + created + ' new group fixture' + (created === 1 ? '' : 's') + ' added' : '') + '.';
+  save('Scheduled ' + written + ' fixtures with the Fixture Planner (' + opt.title + ')'
+    + (created ? ' — created ' + created + ' new group fixtures' : ''));
+  render();
+  return true;
+}
 function fixturesHTML(){
   const fixtures = upcomingMatches();
   const results = finishedMatches();
@@ -1762,8 +2191,14 @@ function fixturesHTML(){
       <p class="hint">Every matchday across Ceylon FC — kickoff times in your local time zone, plus a report for every finished match.</p>
     </div>
     ${flashHTML()}
-    ${unlocked ? `<section class="panel">
-      <div class="section-title">🗓️ Set kickoff times <small>needed for predictions, calendars and countdowns</small></div>
+    ${unlocked ? `
+    <div class="wizard-launch fixture-planner-launch">
+      <div><strong>🗓️ Fixture Planner</strong><small>Give it a window, a match count and the fixtures — or add new group fixtures — and it recommends a conflict-free schedule.</small></div>
+      <button type="button" class="btn primary small" data-action="fixtures-planner-open">${fixturePlannerOpen ? 'Planner open' : 'Plan fixtures'}</button>
+    </div>
+    ${fixturePlannerHTML()}
+    <section class="panel">
+      <div class="section-title">🗓️ Set kickoff times <small>needed for predictions, calendars and countdowns · or let the planner do it in bulk</small></div>
       ${fixtures.length ? `<div class="schedule-list">${fixtures.map(kickoffEditorRowHTML).join('')}</div>`
         : `<div class="empty-box compact">No upcoming fixtures to schedule. Create a knockout bracket in the League tab first.</div>`}
     </section>` : ''}
@@ -6973,6 +7408,83 @@ function handle(action, elId, el){
       logMsg = 'Admin cleared tournament registrations';
       break;
     }
+    case 'fixtures-planner-open': {
+      if (!unlocked) break;
+      fixturePlannerOpen = true; fixturePlannerStep = 1;
+      fixturePlannerDraft = fixturePlannerBlank(); fixturePlannerError = '';
+      break;
+    }
+    case 'fixtures-planner-close': {
+      fixturePlannerOpen = false; fixturePlannerDraft = null;
+      fixturePlannerStep = 1; fixturePlannerError = '';
+      break;
+    }
+    case 'fixtures-planner-back': {
+      fixturePlannerError = '';
+      fixturePlannerStep = Math.max(1, (fixturePlannerStep || 1) - 1);
+      break;
+    }
+    case 'fixtures-planner-next': {
+      const d = fixturePlannerDraft;
+      if (!d) break;
+      fixturePlannerError = '';
+      if (fixturePlannerStep === 1){
+        fixturePlannerCapture();
+        const startTs = Date.parse(localInputToIso(d.start));
+        const endTs = Date.parse(localInputToIso(d.end));
+        if (!Number.isFinite(startTs) || !Number.isFinite(endTs) || endTs <= startTs){
+          fixturePlannerError = 'Choose a valid window — the end must be after the start.'; break;
+        }
+        d.count = Math.max(1, Math.min(100, Number(d.count) || 0));
+        if (d.count < 1){ fixturePlannerError = 'Enter how many matches to schedule (1–100).'; break; }
+        fixturePlannerStep = 2;
+      } else if (fixturePlannerStep === 2){
+        fixturePlannerCapture();
+        if ((d.selected || []).length < d.count){
+          fixturePlannerError = 'Pick at least ' + d.count + ' fixtures, or use “Select all unscheduled”.'; break;
+        }
+        d.options = fixturePlanOptions();
+        if (!d.options.length){
+          fixturePlannerError = 'No plan fits this window. Widen the time period or lower the match count.'; break;
+        }
+        d.optionId = ''; fixturePlannerStep = 3;
+      } else if (fixturePlannerStep === 3){
+        const chosen = d.options.find(o => o.id === d.optionId);
+        if (!chosen || !chosen.fits){
+          fixturePlannerError = 'Choose one of the plans that fits every selected match.'; break;
+        }
+        fixturePlannerStep = 4;
+      }
+      break;
+    }
+    case 'fixtures-planner-add-group': {
+      fixturePlannerAddGroup(); return;
+    }
+    case 'fixtures-planner-remove-group': {
+      fixturePlannerRemoveGroup(Number(elId)); return;
+    }
+    case 'fixtures-planner-select-all': {
+      fixturePlannerCapture();
+      if (fixturePlannerDraft) fixturePlannerDraft.selected = fixturePlannerPool().map(f => f.key);
+      fixturePlannerError = '';
+      break;
+    }
+    case 'fixtures-planner-clear': {
+      fixturePlannerCapture();
+      if (fixturePlannerDraft) fixturePlannerDraft.selected = [];
+      fixturePlannerError = '';
+      break;
+    }
+    case 'fixtures-planner-option': {
+      const d = fixturePlannerDraft; if (!d) break;
+      const chosen = d.options.find(o => o.id === elId);
+      if (!chosen || !chosen.fits) break;
+      d.optionId = elId; fixturePlannerError = '';
+      break;
+    }
+    case 'fixtures-planner-apply': {
+      fixturePlannerApply(); return;
+    }
     case 'wizard-import-registrations':
       wizardImportRegistrations(t); return;
     case 'wizard-open': {
@@ -7583,6 +8095,28 @@ document.addEventListener('change', e => {
     }
     const moveId = el.getAttribute('data-wizard-move');
     if (moveId){ groupWizardMove(moveId, Number(el.value)); return; }
+  }
+  if (el && el.getAttribute && el.getAttribute('data-fp-new-group') != null && fixturePlannerDraft){
+    fixturePlannerDraft.newGroupPick = el.value || ''; fixturePlannerError = ''; return;
+  }
+  if (el && el.getAttribute && el.getAttribute('data-fp-new-count') != null && fixturePlannerDraft){
+    fixturePlannerDraft.newCount = Math.max(1, Math.min(20, Number(el.value) || 1)); fixturePlannerError = ''; return;
+  }
+  if (el && el.getAttribute && el.getAttribute('data-fp-fixture') != null && fixturePlannerDraft){
+    const spec = String(el.getAttribute('data-fp-fixture') || '').split(':');
+    const block = fixturePlannerDraft.newGroups[Number(spec[0])];
+    const row = block && block.rows[Number(spec[1])];
+    if (row && (spec[2] === 'home' || spec[2] === 'away')){
+      row[spec[2]] = el.value || ''; fixturePlannerError = ''; render();
+    }
+    return;
+  }
+  if (el && el.getAttribute && el.getAttribute('data-fp-match') != null && fixturePlannerDraft){
+    const key = el.getAttribute('data-fp-match');
+    const at = fixturePlannerDraft.selected.indexOf(key);
+    if (el.checked && at === -1) fixturePlannerDraft.selected.push(key);
+    else if (!el.checked && at !== -1) fixturePlannerDraft.selected.splice(at, 1);
+    fixturePlannerError = ''; render(); return;
   }
   if (el && el.id === 'fixtureTeamFilter'){ fixtureTeamFilter = el.value || ''; render(); return; }
   if (el && el.hasAttribute && el.hasAttribute('data-fantasy-round')){ fantasyRoundKey = el.value || ''; fantasyEditing = false; fantasyError = ''; render(); return; }

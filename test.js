@@ -575,6 +575,120 @@ const suite = `
     rt.knockouts.config.pending === false && rt.knockouts.rounds[0].length === 2);
   groupWizardOpen = false; groupWizardDraft = null;
 
+  console.log('\\n[14] Fixture Planner recommendations');
+  const fpT = {
+    id: 'fp', name: 'Planner Cup', createdAt: 1,
+    groups: [{ id: 'fg', name: 'Group A', teams: ['f0','f1','f2','f3','f4','f5'].map((id, i) => ({ id, name: 'FP' + (i + 1), note: '' })) }],
+    matches: [
+      ['f0','f1'], ['f2','f3'], ['f4','f5'], ['f0','f2'], ['f1','f3'], ['f4','f0']
+    ].map((pair, i) => ({ id: 'fm' + i, groupId: 'fg', homeId: pair[0], awayId: pair[1], homeGoals: null, awayGoals: null, kickoff: '' })),
+    knockouts: null
+  };
+  state.tournaments.push(fpT);
+  fixturePlannerOpen = true; fixturePlannerStep = 1;
+  fixturePlannerDraft = fixturePlannerBlank();
+  fixturePlannerDraft.start = '2026-12-05T12:00';
+  fixturePlannerDraft.end = '2026-12-06T22:00';
+  fixturePlannerDraft.count = 4;
+  fixturePlannerDraft.selected = fpT.matches.map(m => matchKey(fpT, m, 'g'));
+  const fpOptions = fixturePlanOptions();
+  fixturePlannerDraft.options = fpOptions;
+  T('fixture planner recommends several plans with one marked best',
+    fpOptions.length === 3 && fpOptions.filter(o => o.recommended).length === 1 &&
+    fpOptions.every(o => o.schedule.length === 4 && o.fits));
+  const fpBest = fpOptions.find(o => o.recommended);
+  T('plans stay inside the chosen window',
+    fpOptions.every(o => o.schedule.every(s => {
+      const ts = Date.parse(s.iso);
+      return ts >= Date.parse(localInputToIso(fixturePlannerDraft.start))
+        && ts <= Date.parse(localInputToIso(fixturePlannerDraft.end));
+    })));
+  T('plans never give one team two matches in the same slot',
+    fpOptions.every(o => o.schedule.every(s => {
+      const teams = (fpT.matches.find(m => m.id === String(s.key).split(':').pop()) || {});
+      return !!teams.homeId && !!teams.awayId && teams.homeId !== teams.awayId;
+    })) && fpOptions.every(o => {
+      const slots = {};
+      o.schedule.forEach(s => {
+        slots[s.iso] = slots[s.iso] || [];
+        const m = fpT.matches.find(x => x.id === String(s.key).split(':').pop());
+        slots[s.iso].push(m.homeId, m.awayId);
+      });
+      return Object.keys(slots).every(k => new Set(slots[k]).size === slots[k].length);
+    }));
+  T('plans respect each strategy rest gap', fpOptions.every(o => {
+    const last = {};
+    const ordered = o.schedule.slice().sort((a, b) => Date.parse(a.iso) - Date.parse(b.iso));
+    let ok = true;
+    ordered.forEach(s => {
+      const m = fpT.matches.find(x => x.id === String(s.key).split(':').pop());
+      const ts = Date.parse(s.iso);
+      [m.homeId, m.awayId].forEach(id => {
+        if (last[id] != null && ts - last[id] < o.rest * 60000) ok = false;
+        last[id] = ts;
+      });
+    });
+    return ok;
+  }));
+  fixturePlannerDraft.optionId = fpBest.id;
+  T('preview shows the chosen kickoff slots',
+    fixturePlannerPreviewHTML(fixturePlannerDraft, fpBest).indexOf('🕒') !== -1 &&
+    fixturePlannerPreviewHTML(fixturePlannerDraft, fpBest).indexOf('FP1') !== -1);
+  T('applying the plan writes only the chosen kickoff times',
+    fixturePlannerApply() === true && !fixturePlannerOpen &&
+    fpT.matches.filter(m => !!m.kickoff).length === 4 &&
+    fpT.matches.filter(m => !m.kickoff).length === 2);
+  state.tournaments = state.tournaments.filter(x => x.id !== 'fp');
+
+  console.log('\\n[15] Fixture Planner group builder');
+  const fpNewT = {
+    id: 'fpnew', name: 'Planner Groups', createdAt: 2,
+    groups: [{ id: 'ng', name: 'Group N', teams: ['n0','n1','n2','n3'].map((id, i) => ({ id, name: 'NG' + (i + 1), note: '' })) }],
+    matches: [], knockouts: null
+  };
+  state.tournaments.push(fpNewT);
+  fixturePlannerOpen = true; fixturePlannerStep = 2;
+  fixturePlannerDraft = fixturePlannerBlank();
+  fixturePlannerDraft.start = '2026-12-05T12:00';
+  fixturePlannerDraft.end = '2026-12-06T22:00';
+  fixturePlannerDraft.count = 2;
+  setEl('fpNewGroup', 'fpnew|ng'); setEl('fpNewCount', '2');
+  T('admin stages a group, a match count and the playing pairs',
+    fixturePlannerAddGroup() === true &&
+    fixturePlannerDraft.newGroups.length === 1 &&
+    fixturePlannerDraft.newGroups[0].count === 2 &&
+    fixturePlannerDraft.newGroups[0].rows[0].homeId === 'n0' &&
+    fixturePlannerDraft.newGroups[0].rows[0].awayId === 'n1' &&
+    fixturePlannerDraft.newGroups[0].rows[1].homeId === 'n2' &&
+    fixturePlannerDraft.newGroups[0].rows[1].awayId === 'n3');
+  const builderHTML = fixturePlannerBuilderHTML(fixturePlannerDraft);
+  T('staged group fixtures expose editable home and away picks',
+    builderHTML.indexOf('Planner Groups · Group N') !== -1 &&
+    builderHTML.indexOf('data-fp-fixture="0:0:home"') !== -1 &&
+    builderHTML.indexOf('data-fp-fixture="0:0:away"') !== -1 &&
+    builderHTML.indexOf('data-fp-fixture="0:1:home"') !== -1 &&
+    builderHTML.indexOf('data-fp-fixture="0:1:away"') !== -1);
+  T('new group fixtures join the planner pick list',
+    fixturePlannerPool().some(f => f.key === 'fpnew:0:0') &&
+    fixturePlannerPool().some(f => f.key === 'fpnew:0:1') &&
+    fixturePlannerMatchesHTML(fixturePlannerDraft).indexOf('>New<') !== -1);
+  fixturePlannerDraft.newGroups[0].rows[0].awayId = 'n2';
+  T('editing who plays updates the staged fixture',
+    fixturePlannerStagedFixtures().find(f => f.key === 'fpnew:0:0').away === 'NG3');
+  fixturePlannerDraft.newGroups[0].rows[0].awayId = 'n1';
+  fixturePlannerDraft.selected = ['fpnew:0:0', 'fpnew:0:1'];
+  const fpNewOptions = fixturePlanOptions();
+  fixturePlannerDraft.options = fpNewOptions;
+  fixturePlannerDraft.optionId = fpNewOptions.find(o => o.recommended).id;
+  T('new group fixtures can be scheduled from the recommendations',
+    fpNewOptions.length === 3 && fpNewOptions.every(o => o.fits && o.schedule.length === 2));
+  T('applying creates only the staged group matches with their kickoffs',
+    fixturePlannerApply() === true && fpNewT.matches.length === 2 &&
+    fpNewT.matches.every(m => m.groupId === 'ng' && !!m.kickoff && m.homeGoals == null && m.awayGoals == null) &&
+    fpNewT.matches.some(m => m.homeId === 'n0' && m.awayId === 'n1') &&
+    fpNewT.matches.some(m => m.homeId === 'n2' && m.awayId === 'n3'));
+  state.tournaments = state.tournaments.filter(x => x.id !== 'fpnew');
+
   console.log('\\n[10] Migration check: legacy single-table + qf/sf/final (see second context run)');
   console.log('\\n' + (fails === 0 ? '🎉 ALL TESTS PASSED' : '⚠️  ' + fails + ' TEST(S) FAILED'));
   globalThis.__exitCode = fails;
